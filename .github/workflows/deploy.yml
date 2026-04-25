@@ -1,0 +1,75 @@
+name: Deploy Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.5.0)'
+        required: true
+        default: 'v0.5.0'
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r desktop/requirements.txt
+
+      - name: Build EXE
+        working-directory: desktop
+        run: pyinstaller audio2text.spec
+
+      - name: Determine version tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Git tag (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag "${{ steps.tag.outputs.version }}" || true
+          git push origin "${{ steps.tag.outputs.version }}" || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.version }}
+          name: "Audio2Text ${{ steps.tag.outputs.version }} — Windows"
+          body: |
+            ## Audio2Text — Windows EXE
+
+            Download `audio2text-windows.exe` and run it directly — no installation required.
+
+            **First launch:** the app downloads the Whisper speech model (~75 MB for *tiny*) automatically.
+
+            ### System requirements
+            - Windows 10 / 11 (x64)
+            - Internet connection on first run
+
+            ### Supported audio formats
+            MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS
+          files: desktop/dist/audio2text-windows.exe
+          draft: false
+          prerelease: false
