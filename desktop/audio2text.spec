@@ -2,7 +2,8 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ('faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub'):
+for pkg in ('faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub',
+            'soundcard', 'numpy'):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
