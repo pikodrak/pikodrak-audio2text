@@ -64,7 +64,12 @@ jobs:
 
             **First launch:** the app downloads the Whisper speech model (~250 MB for *small*, the new default) automatically.
 
-            ### What's new in this release
+            ### What's new in v0.6.4
+            - **Configurable chunk / buffer size** — new Chunk dropdown (3 s / 5 s / 8 s / 15 s / 30 s) lets you tune latency vs. accuracy; hover for a tooltip explaining the tradeoff
+            - **Settings persist across restarts** — model, language, translate, input source, and chunk size are now saved automatically and restored on next launch
+            - **Cleaner error messages** — soundcard errors no longer leak raw Windows error codes
+
+            ### What was new in earlier releases
             - **Models stored next to the EXE** — downloaded model files are saved in a `models/` folder next to `audio2text-windows.exe`, not buried in your user profile
             - **Improved transcription quality** — default model upgraded from *tiny* to *small* (3–4× better accuracy); *large-v3* also available in the dropdown
             - **Audio normalisation** — quiet loopback audio (e.g. VoIP calls) is now boosted before transcription
