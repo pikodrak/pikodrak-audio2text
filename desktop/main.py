@@ -5,12 +5,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
 
-MODELS = ["tiny", "base", "small", "medium"]
+MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "cs", "en", "de", "fr", "es", "it", "pl", "sk"]
 INPUT_SOURCES = ["Audio file", "Microphone", "System audio (loopback)"]
 
 SAMPLE_RATE = 16000
-CHUNK_SECONDS = 5  # seconds buffered before each whisper pass
+CHUNK_SECONDS = 8  # seconds buffered before each whisper pass (≥8s gives better context)
 
 
 def _model_cache_dir():
@@ -60,7 +60,7 @@ class Audio2TextApp(tk.Tk):
         opts.pack(fill=tk.X)
 
         ttk.Label(opts, text="Model:").pack(side=tk.LEFT)
-        self.model_var = tk.StringVar(value="tiny")
+        self.model_var = tk.StringVar(value="small")
         ttk.Combobox(opts, textvariable=self.model_var, values=MODELS,
                      width=8, state="readonly").pack(side=tk.LEFT, padx=(5, 15))
 
@@ -167,9 +167,10 @@ class Audio2TextApp(tk.Tk):
             cache = _model_cache_dir()
             self.after(0, self.status_var.set,
                        f"Loading '{model_name}' model — cache: {cache}")
-            model = WhisperModel(model_name, compute_type="int8")
+            model = WhisperModel(model_name, compute_type="float16")
             self.after(0, self.status_var.set, "Transcribing…")
-            segments, info = model.transcribe(path, language=lang, beam_size=5, task=task)
+            segments, info = model.transcribe(
+                path, language=lang, beam_size=5, task=task, vad_filter=True)
             result = " ".join(seg.text.strip() for seg in segments)
             self.after(0, self._on_file_done, result, info.language)
         except Exception as exc:
@@ -203,18 +204,21 @@ class Audio2TextApp(tk.Tk):
             task = "translate" if self.translate_var.get() else "transcribe"
             cache = _model_cache_dir()
 
+            model_sizes = {"tiny": "~75 MB", "base": "~150 MB", "small": "~250 MB",
+                           "medium": "~800 MB", "large-v3": "~3 GB"}
+            model_size_hint = model_sizes.get(model_name, "")
             self.after(0, self._log_info, (
                 f"Source:     {source}\n"
-                f"Model:      {model_name}  |  task: {task}  |  lang: {lang or 'auto'}\n"
+                f"Model:      {model_name} {model_size_hint}  |  task: {task}  |  lang: {lang or 'auto'}\n"
                 f"Model cache: {cache}\n"
                 f"Chunk size: {CHUNK_SECONDS}s  |  sample rate: {SAMPLE_RATE} Hz\n"
                 "─────────────────────────────────────────\n"
-                "Loading model… (first run downloads ~75–150 MB, please wait)\n"
+                f"Loading model… (first run downloads {model_size_hint}, please wait)\n"
             ))
             self.after(0, self.status_var.set,
                        f"Loading '{model_name}' model… (cache: {cache})")
 
-            model = WhisperModel(model_name, compute_type="int8")
+            model = WhisperModel(model_name, compute_type="float16")
 
             self.after(0, self._log_info, "Model loaded. Opening audio device…\n")
             self.after(0, self.status_var.set, "Model loaded — opening audio device…")
@@ -311,6 +315,10 @@ class Audio2TextApp(tk.Tk):
                     chunk_num += 1
                     chunk = np.concatenate(buffer)
                     buffer = []
+                    # Normalize: boost quiet audio and prevent clipping
+                    peak = float(np.max(np.abs(chunk)))
+                    if peak > 1e-6:
+                        chunk = chunk / peak * 0.95
                     self.after(0, self.status_var.set,
                                f"Processing chunk #{chunk_num}…")
                     self._process_chunk(model, chunk, lang, task, chunk_num)
@@ -320,13 +328,16 @@ class Audio2TextApp(tk.Tk):
             remaining = np.concatenate(buffer)
             if len(remaining) > SAMPLE_RATE // 2:
                 chunk_num += 1
+                peak = float(np.max(np.abs(remaining)))
+                if peak > 1e-6:
+                    remaining = remaining / peak * 0.95
                 self.after(0, self.status_var.set, "Processing final chunk…")
                 self._process_chunk(model, remaining, lang, task, chunk_num)
 
     def _process_chunk(self, model, audio, lang, task, chunk_num=0):
         try:
             segments, info = model.transcribe(
-                audio, language=lang, beam_size=5, task=task)
+                audio, language=lang, beam_size=5, task=task, vad_filter=True)
             text = " ".join(seg.text.strip() for seg in segments)
             if text:
                 self.after(0, self._append_text, text)
