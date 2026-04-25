@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -8,9 +9,10 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "cs", "en", "de", "fr", "es", "it", "pl", "sk"]
 INPUT_SOURCES = ["Audio file", "Microphone", "System audio (loopback)"]
+CHUNK_OPTIONS = [3, 5, 8, 15, 30]
 
 SAMPLE_RATE = 16000
-CHUNK_SECONDS = 8  # seconds buffered before each whisper pass (≥8s gives better context)
+CHUNK_DEFAULT = 8  # seconds — default buffer size before each Whisper pass
 
 
 def _model_cache_dir():
@@ -29,6 +31,39 @@ def _model_cache_dir():
     return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
 
 
+def _config_path():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME",
+                               os.path.join(os.path.expanduser("~"), ".config"))
+    return os.path.join(base, "audio2text", "settings.json")
+
+
+class _ToolTip:
+    def __init__(self, widget, text):
+        self._widget = widget
+        self._text = text
+        self._tip = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, _event=None):
+        x = self._widget.winfo_rootx() + 20
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        ttk.Label(self._tip, text=self._text, background="#ffffe0",
+                  relief="solid", borderwidth=1, wraplength=280,
+                  padding=(6, 4)).pack()
+
+    def _hide(self, _event=None):
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
 class Audio2TextApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -37,6 +72,9 @@ class Audio2TextApp(tk.Tk):
         self.resizable(True, True)
         self._recording = False
         self._build_ui()
+        self._load_settings()
+        self._on_source_change()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------ UI --
 
@@ -79,7 +117,23 @@ class Audio2TextApp(tk.Tk):
 
         self.translate_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Translate to English",
-                        variable=self.translate_var).pack(side=tk.LEFT, padx=(15, 0))
+                        variable=self.translate_var).pack(side=tk.LEFT, padx=(15, 15))
+
+        ttk.Label(opts, text="Chunk:").pack(side=tk.LEFT)
+        self.chunk_var = tk.StringVar(value=f"{CHUNK_DEFAULT}s")
+        chunk_cb = ttk.Combobox(
+            opts, textvariable=self.chunk_var,
+            values=[f"{s}s" for s in CHUNK_OPTIONS],
+            width=5, state="readonly",
+        )
+        chunk_cb.pack(side=tk.LEFT, padx=(3, 0))
+        _ToolTip(
+            chunk_cb,
+            "Buffer duration before each Whisper pass.\n"
+            "Smaller → lower latency, less context (may cut words).\n"
+            "Larger → higher latency, better accuracy.\n"
+            "Default: 8s"
+        )
 
         # --- Action buttons ---
         btn_frame = ttk.Frame(self, padding=(10, 0, 10, 5))
@@ -120,6 +174,53 @@ class Audio2TextApp(tk.Tk):
         else:
             self._file_row.pack_forget()
             self.btn.config(text="Start")
+
+    # --------------------------------------------------------------- Settings --
+
+    def _load_settings(self):
+        try:
+            with open(_config_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "model" in data and data["model"] in MODELS:
+                self.model_var.set(data["model"])
+            if "language" in data and data["language"] in LANGUAGES:
+                self.lang_var.set(data["language"])
+            if "translate" in data:
+                self.translate_var.set(bool(data["translate"]))
+            if "source" in data and data["source"] in INPUT_SOURCES:
+                self.source_var.set(data["source"])
+            if "chunk_seconds" in data and data["chunk_seconds"] in CHUNK_OPTIONS:
+                self.chunk_var.set(f"{data['chunk_seconds']}s")
+        except Exception:
+            pass
+
+    def _save_settings(self):
+        try:
+            path = _config_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data = {
+                "model": self.model_var.get(),
+                "language": self.lang_var.get(),
+                "translate": self.translate_var.get(),
+                "source": self.source_var.get(),
+                "chunk_seconds": self._chunk_seconds(),
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _chunk_seconds(self):
+        """Return chunk size as integer seconds from the UI var (e.g. '8s' → 8)."""
+        raw = self.chunk_var.get().rstrip("s")
+        try:
+            return int(raw)
+        except ValueError:
+            return CHUNK_DEFAULT
+
+    def _on_close(self):
+        self._save_settings()
+        self.destroy()
 
     # --------------------------------------------------------------- Browse --
 
@@ -199,10 +300,11 @@ class Audio2TextApp(tk.Tk):
         self.copy_btn.config(state=tk.DISABLED)
         self._set_text("")
         self.status_var.set("Starting…")
+        chunk_secs = self._chunk_seconds()
         threading.Thread(
-            target=self._live_loop, args=(source,), daemon=True).start()
+            target=self._live_loop, args=(source, chunk_secs), daemon=True).start()
 
-    def _live_loop(self, source):
+    def _live_loop(self, source, chunk_secs):
         try:
             import numpy as np
             from faster_whisper import WhisperModel
@@ -219,7 +321,7 @@ class Audio2TextApp(tk.Tk):
                 f"Source:     {source}\n"
                 f"Model:      {model_name} {model_size_hint}  |  task: {task}  |  lang: {lang or 'auto'}\n"
                 f"Model cache: {cache}\n"
-                f"Chunk size: {CHUNK_SECONDS}s  |  sample rate: {SAMPLE_RATE} Hz\n"
+                f"Chunk size: {chunk_secs}s  |  sample rate: {SAMPLE_RATE} Hz\n"
                 "─────────────────────────────────────────\n"
                 f"Loading model… (first run downloads {model_size_hint}, please wait)\n"
             ))
@@ -232,9 +334,9 @@ class Audio2TextApp(tk.Tk):
             self.after(0, self.status_var.set, "Model loaded — opening audio device…")
 
             if source == "System audio (loopback)":
-                self._capture_loopback(model, lang, task)
+                self._capture_loopback(model, lang, task, chunk_secs)
             else:
-                self._capture_microphone(model, lang, task)
+                self._capture_microphone(model, lang, task, chunk_secs)
 
         except ImportError as exc:
             msg = (
@@ -249,14 +351,15 @@ class Audio2TextApp(tk.Tk):
             self._recording = False
             self.after(0, self._on_live_stopped)
 
-    def _capture_loopback(self, model, lang, task):
+    def _capture_loopback(self, model, lang, task, chunk_secs):
         import soundcard as sc
 
         try:
             default_speaker = sc.default_speaker()
         except Exception as exc:
             raise RuntimeError(
-                "Cannot find a default audio output device.\n\n"
+                f"Cannot find a default audio output device.\n\n"
+                f"soundcard error: {exc}\n\n"
                 "Make sure Windows has a default playback device set:\n"
                 "  Start → Settings → Sound → Output"
             ) from exc
@@ -267,6 +370,7 @@ class Audio2TextApp(tk.Tk):
         except Exception as exc:
             raise RuntimeError(
                 f"Cannot open WASAPI loopback on '{speaker_name}'.\n\n"
+                f"soundcard error: {exc}\n\n"
                 "Possible fixes:\n"
                 "  • Update your audio driver (Realtek, IDT, etc.)\n"
                 "  • Control Panel → Sound → Recording → enable 'Stereo Mix'\n"
@@ -277,31 +381,30 @@ class Audio2TextApp(tk.Tk):
                    f"Loopback device: {speaker_name}\nRecording… (speak during your call)\n")
         self.after(0, self.status_var.set,
                    f"Recording loopback: {speaker_name}")
-        self._run_capture(loopback, model, lang, task)
+        self._run_capture(loopback, model, lang, task, chunk_secs)
 
-    def _capture_microphone(self, model, lang, task):
+    def _capture_microphone(self, model, lang, task, chunk_secs):
         import soundcard as sc
 
         try:
             mic = sc.default_microphone()
         except Exception as exc:
             raise RuntimeError(
-                "No default microphone found.\n\n"
-                "To fix: go to Start → Settings → Sound → Input,\n"
-                "connect a microphone and set it as the default recording device.\n\n"
-                "You can also close this dialog and switch to\n"
-                "'System audio (loopback)' to capture desktop audio instead."
+                f"Cannot find a default microphone.\n\n"
+                f"soundcard error: {exc}\n\n"
+                "Make sure a microphone is connected and set as the default recording device:\n"
+                "  Start → Settings → Sound → Input"
             ) from exc
 
         self.after(0, self._log_info,
                    f"Microphone: {mic.name}\nRecording…\n")
         self.after(0, self.status_var.set, f"Recording microphone: {mic.name}")
-        self._run_capture(mic, model, lang, task)
+        self._run_capture(mic, model, lang, task, chunk_secs)
 
-    def _run_capture(self, device, model, lang, task):
+    def _run_capture(self, device, model, lang, task, chunk_secs):
         import numpy as np
 
-        chunk_frames = SAMPLE_RATE * CHUNK_SECONDS
+        chunk_frames = SAMPLE_RATE * chunk_secs
         chunk_num = 0
 
         with device.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
@@ -316,7 +419,7 @@ class Audio2TextApp(tk.Tk):
                 total = sum(len(d) for d in buffer)
                 secs_buffered = total / SAMPLE_RATE
                 self.after(0, self.status_var.set,
-                           f"Recording… {secs_buffered:.0f}/{CHUNK_SECONDS}s buffered")
+                           f"Recording… {secs_buffered:.0f}/{chunk_secs}s buffered")
 
                 if total >= chunk_frames:
                     chunk_num += 1
