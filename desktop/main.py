@@ -16,7 +16,7 @@ SAMPLE_RATE = 16000
 CHUNK_DEFAULT = 8  # seconds — default buffer size before each Whisper pass
 # Carry the last OVERLAP_SECS of each chunk into the next so words that fall at a
 # chunk boundary are not silently dropped by the VAD filter.
-OVERLAP_SECS = 1.0
+OVERLAP_SECS = 0.5
 # VAD options for live chunks: lower min_speech catches short fragments at boundaries;
 # generous speech_pad prevents edge trimming.
 _LIVE_VAD_PARAMS = {"min_speech_duration_ms": 100, "speech_pad_ms": 400}
@@ -501,11 +501,11 @@ class Audio2TextApp(tk.Tk):
             segments, info = model.transcribe(
                 audio, language=lang, beam_size=5, task=task,
                 vad_filter=True, vad_parameters=_LIVE_VAD_PARAMS)
-            # Skip segments that end within the overlap zone — they were already
-            # emitted by the previous chunk.  Segments that end after the overlap
-            # boundary are new content (including words that bridged the boundary).
+            # Skip segments that START within the overlap zone — they were already
+            # emitted by the previous chunk.  Segments starting at or after the
+            # overlap boundary are genuinely new content.
             text = " ".join(
-                seg.text.strip() for seg in segments if seg.end > overlap_secs
+                seg.text.strip() for seg in segments if seg.start >= overlap_secs
             )
             if text:
                 self.after(0, self._append_text, text)
@@ -556,7 +556,12 @@ class Audio2TextApp(tk.Tk):
 
     def _append_text(self, text):
         self.text.config(state=tk.NORMAL)
-        self.text.insert(tk.END, text + "\n")
+        # Separate consecutive transcription chunks with a space so the output
+        # flows as natural prose rather than one hard newline per chunk.
+        tail = self.text.get("end-2c", "end-1c")
+        if tail and tail not in ("\n", " "):
+            self.text.insert(tk.END, " ")
+        self.text.insert(tk.END, text)
         self.text.see(tk.END)
         self.text.config(state=tk.DISABLED)
         self.copy_btn.config(state=tk.NORMAL)
