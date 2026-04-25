@@ -64,11 +64,17 @@ jobs:
 
             **First launch:** the app downloads the Whisper speech model (~75 MB for *tiny*) automatically.
 
+            ### What's new in this release
+            - **System audio (loopback) capture** — transcribe/translate incoming speech from WhatsApp, Teams, Zoom, and other VoIP calls in real time via WASAPI loopback (no extra installs)
+            - **Microphone live capture** — stream microphone input directly to Whisper
+            - **Translate to English** — one-click toggle translates any detected language to English using Whisper's built-in translate mode
+            - **Stop button** — end live capture at any time; remaining buffered audio is flushed automatically
+
             ### System requirements
             - Windows 10 / 11 (x64)
             - Internet connection on first run
 
-            ### Supported audio formats
+            ### Supported audio formats (file mode)
             MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS
           files: desktop/dist/audio2text-windows.exe
           draft: false
