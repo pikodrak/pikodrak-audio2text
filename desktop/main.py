@@ -10,6 +10,7 @@ MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = ["auto", "cs", "en", "de", "fr", "es", "it", "pl", "sk"]
 INPUT_SOURCES = ["Audio file", "Microphone", "System audio (loopback)"]
 CHUNK_OPTIONS = [3, 5, 8, 15, 30]
+MIC_DEFAULT_LABEL = "System default"
 
 SAMPLE_RATE = 16000
 CHUNK_DEFAULT = 8  # seconds — default buffer size before each Whisper pass
@@ -101,6 +102,18 @@ class Audio2TextApp(tk.Tk):
         ttk.Button(self._file_row, text="Browse…", command=self._browse).pack(
             side=tk.LEFT)
 
+        # Microphone device row (hidden unless source is "Microphone")
+        self._device_row = ttk.Frame(self, padding=(10, 5, 10, 0))
+        # not packed here — _on_source_change manages visibility
+        ttk.Label(self._device_row, text="Microphone:").pack(side=tk.LEFT)
+        self.mic_var = tk.StringVar(value=MIC_DEFAULT_LABEL)
+        self._mic_cb = ttk.Combobox(
+            self._device_row, textvariable=self.mic_var, width=44, state="readonly")
+        self._mic_cb["values"] = [MIC_DEFAULT_LABEL]
+        self._mic_cb.pack(side=tk.LEFT, padx=(5, 3))
+        ttk.Button(self._device_row, text="↺", width=2,
+                   command=self._refresh_mics).pack(side=tk.LEFT)
+
         # --- Options ---
         opts = ttk.Frame(self, padding=(10, 6, 10, 6))
         opts.pack(fill=tk.X)
@@ -168,12 +181,29 @@ class Audio2TextApp(tk.Tk):
 
     def _on_source_change(self):
         src = self.source_var.get()
+        self._file_row.pack_forget()
+        self._device_row.pack_forget()
         if src == "Audio file":
             self._file_row.pack(fill=tk.X, after=self._src_frame)
             self.btn.config(text="Transcribe")
-        else:
-            self._file_row.pack_forget()
+        elif src == "Microphone":
+            self._device_row.pack(fill=tk.X, after=self._src_frame)
+            self._refresh_mics()
             self.btn.config(text="Start")
+        else:
+            self.btn.config(text="Start")
+
+    def _refresh_mics(self):
+        """Populate the microphone dropdown with available input devices."""
+        try:
+            import soundcard as sc
+            names = [MIC_DEFAULT_LABEL] + [m.name for m in sc.all_microphones()]
+        except Exception:
+            names = [MIC_DEFAULT_LABEL]
+        current = self.mic_var.get()
+        self._mic_cb["values"] = names
+        if current not in names:
+            self.mic_var.set(MIC_DEFAULT_LABEL)
 
     # --------------------------------------------------------------- Settings --
 
@@ -191,6 +221,8 @@ class Audio2TextApp(tk.Tk):
                 self.source_var.set(data["source"])
             if "chunk_seconds" in data and data["chunk_seconds"] in CHUNK_OPTIONS:
                 self.chunk_var.set(f"{data['chunk_seconds']}s")
+            if "mic_device" in data and isinstance(data["mic_device"], str):
+                self.mic_var.set(data["mic_device"] or MIC_DEFAULT_LABEL)
         except Exception:
             pass
 
@@ -198,12 +230,14 @@ class Audio2TextApp(tk.Tk):
         try:
             path = _config_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            mic = self.mic_var.get()
             data = {
                 "model": self.model_var.get(),
                 "language": self.lang_var.get(),
                 "translate": self.translate_var.get(),
                 "source": self.source_var.get(),
                 "chunk_seconds": self._chunk_seconds(),
+                "mic_device": mic if mic != MIC_DEFAULT_LABEL else "",
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -386,14 +420,20 @@ class Audio2TextApp(tk.Tk):
     def _capture_microphone(self, model, lang, task, chunk_secs):
         import soundcard as sc
 
+        selected = self.mic_var.get()
         try:
-            mic = sc.default_microphone()
+            if not selected or selected == MIC_DEFAULT_LABEL:
+                mic = sc.default_microphone()
+            else:
+                mic = sc.get_microphone(id=selected)
         except Exception as exc:
+            device_label = selected if selected and selected != MIC_DEFAULT_LABEL else "default microphone"
             raise RuntimeError(
-                f"Cannot find a default microphone.\n\n"
+                f"Cannot open {device_label}.\n\n"
                 f"soundcard error: {exc}\n\n"
                 "Make sure a microphone is connected and set as the default recording device:\n"
-                "  Start → Settings → Sound → Input"
+                "  Start → Settings → Sound → Input\n\n"
+                "If the issue persists, try selecting a specific device from the Microphone dropdown."
             ) from exc
 
         self.after(0, self._log_info,
