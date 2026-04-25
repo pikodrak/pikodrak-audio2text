@@ -20,6 +20,9 @@ OVERLAP_SECS = 0.5
 # VAD options for live chunks: lower min_speech catches short fragments at boundaries;
 # generous speech_pad prevents edge trimming.
 _LIVE_VAD_PARAMS = {"min_speech_duration_ms": 100, "speech_pad_ms": 400}
+# Streaming preview: run a fast greedy inference pass every N seconds on the
+# accumulating buffer so users see text within ~2 s of speaking.
+PREVIEW_INTERVAL_SECS = 2.0
 
 _DIAR_MODEL_ID = "pyannote/speaker-diarization-3.1"
 
@@ -136,6 +139,13 @@ class Audio2TextApp(tk.Tk):
         self.resizable(True, True)
         self._recording = False
         self._diar_pipeline = None   # cached pyannote pipeline (loaded on first diarize use)
+        # Streaming preview state — shared between capture thread and preview thread
+        self._whisper_lock = threading.Lock()
+        self._buffer_lock = threading.Lock()
+        self._live_buffer = []         # shallow copy of current capture buffer
+        self._current_overlap = None   # last overlap ndarray
+        self._preview_start_mark = None  # Tkinter mark anchoring the pending preview region
+        self._preview_gen = 0          # incremented each time a chunk resets the buffer
         self._build_ui()
         self._load_settings()
         self._on_source_change()
@@ -268,6 +278,8 @@ class Audio2TextApp(tk.Tk):
         # Style for info lines
         self.text.tag_config("info", foreground="#888888")
         self.text.tag_config("error_tag", foreground="#cc0000")
+        # Pending preview: grey italic, replaced by finalized text when the chunk completes
+        self.text.tag_config("pending", foreground="#999999", font=("Segoe UI", 10, "italic"))
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN,
@@ -490,6 +502,8 @@ class Audio2TextApp(tk.Tk):
         self.stop_btn.config(state=tk.NORMAL)
         self.copy_btn.config(state=tk.DISABLED)
         self._set_text("")
+        self._preview_start_mark = None
+        self._preview_gen = 0
         self.status_var.set("Starting…")
         chunk_secs = self._chunk_seconds()
         threading.Thread(
@@ -619,6 +633,19 @@ class Audio2TextApp(tk.Tk):
         chunk_num = 0
         overlap = np.zeros(0, dtype="float32")
 
+        # Initialise shared state consumed by the preview thread
+        with self._buffer_lock:
+            self._live_buffer = []
+            self._current_overlap = overlap
+
+        # Launch streaming-preview on a parallel thread
+        preview_thread = threading.Thread(
+            target=self._preview_loop,
+            args=(model, lang, task),
+            daemon=True,
+        )
+        preview_thread.start()
+
         with device.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
             buffer = []
             while self._recording:
@@ -627,6 +654,9 @@ class Audio2TextApp(tk.Tk):
                     data = data.mean(axis=1)
                 data = data.astype("float32")
                 buffer.append(data)
+
+                with self._buffer_lock:
+                    self._live_buffer = list(buffer)
 
                 total = sum(len(d) for d in buffer)
                 secs_buffered = total / SAMPLE_RATE
@@ -637,9 +667,15 @@ class Audio2TextApp(tk.Tk):
                     chunk_num += 1
                     new_audio = np.concatenate(buffer)
                     buffer = []
+                    # Invalidate any in-flight preview — a finalized chunk is incoming
+                    self._preview_gen += 1
+                    with self._buffer_lock:
+                        self._live_buffer = []
                     chunk = np.concatenate([overlap, new_audio]) if len(overlap) else new_audio
                     overlap_secs = len(overlap) / SAMPLE_RATE
                     overlap = new_audio[-int(SAMPLE_RATE * OVERLAP_SECS):]
+                    with self._buffer_lock:
+                        self._current_overlap = overlap
                     # Normalize: boost quiet audio and prevent clipping
                     peak = float(np.max(np.abs(chunk)))
                     if peak > 1e-6:
@@ -654,6 +690,9 @@ class Audio2TextApp(tk.Tk):
             remaining = np.concatenate(buffer)
             if len(remaining) > SAMPLE_RATE // 2:
                 chunk_num += 1
+                self._preview_gen += 1
+                with self._buffer_lock:
+                    self._live_buffer = []
                 chunk = np.concatenate([overlap, remaining]) if len(overlap) else remaining
                 overlap_secs = len(overlap) / SAMPLE_RATE
                 peak = float(np.max(np.abs(chunk)))
@@ -663,16 +702,82 @@ class Audio2TextApp(tk.Tk):
                 self._process_chunk(model, chunk, lang, task, chunk_num, overlap_secs,
                                     diarize, diar_pipeline)
 
+        # Clean up shared state
+        with self._buffer_lock:
+            self._live_buffer = []
+
+    def _preview_loop(self, model, lang, task):
+        """Run greedy Whisper every PREVIEW_INTERVAL_SECS on the accumulating buffer.
+
+        Emits grey-italic pending text that is replaced once the full chunk finalizes.
+        Uses beam_size=1 (greedy) for low latency. Serialized with _process_chunk via
+        _whisper_lock so both threads never call faster-whisper concurrently.
+        """
+        import time
+        import numpy as np
+
+        while self._recording:
+            time.sleep(PREVIEW_INTERVAL_SECS)
+            if not self._recording:
+                break
+
+            # Snapshot generation counter *before* reading the buffer so we can
+            # detect a chunk reset that happened while we were doing inference.
+            gen = self._preview_gen
+
+            with self._buffer_lock:
+                buf = list(self._live_buffer)
+                ovlp = (self._current_overlap.copy()
+                        if self._current_overlap is not None and len(self._current_overlap)
+                        else np.zeros(0, dtype="float32"))
+
+            if not buf:
+                continue
+
+            snapshot = np.concatenate(buf)
+            if len(snapshot) < SAMPLE_RATE // 2:  # need at least 0.5 s to infer
+                continue
+
+            audio = np.concatenate([ovlp, snapshot]) if len(ovlp) else snapshot
+            overlap_secs = len(ovlp) / SAMPLE_RATE
+            peak = float(np.max(np.abs(audio)))
+            if peak < 1e-6:
+                continue
+            audio = audio / peak * 0.95
+
+            with self._whisper_lock:
+                # Re-check: a chunk may have been reset while we waited for the lock
+                if self._preview_gen != gen:
+                    continue
+                try:
+                    segs_gen, _ = model.transcribe(
+                        audio, language=lang, beam_size=1, task=task,
+                        vad_filter=True, vad_parameters=_LIVE_VAD_PARAMS,
+                    )
+                    text = " ".join(
+                        seg.text.strip() for seg in segs_gen
+                        if seg.start >= overlap_secs
+                    )
+                except Exception:
+                    continue
+
+            if text and self._recording and self._preview_gen == gen:
+                self.after(0, self._update_preview, text, gen)
+
     def _process_chunk(self, model, audio, lang, task, chunk_num=0, overlap_secs=0.0,
                        diarize=False, diar_pipeline=None):
         try:
-            segments, info = model.transcribe(
-                audio, language=lang, beam_size=5, task=task,
-                vad_filter=True, vad_parameters=_LIVE_VAD_PARAMS)
-            # Skip segments that START within the overlap zone — they were already
-            # emitted by the previous chunk.  Segments starting at or after the
-            # overlap boundary are genuinely new content.
-            valid_segs = [seg for seg in segments if seg.start >= overlap_secs]
+            # Serialize whisper inference with the preview thread (faster-whisper is not
+            # safe to call concurrently from two threads on the same model object).
+            with self._whisper_lock:
+                segs_gen, info = model.transcribe(
+                    audio, language=lang, beam_size=5, task=task,
+                    vad_filter=True, vad_parameters=_LIVE_VAD_PARAMS)
+                # Materialize inside the lock — the generator runs inference lazily.
+                # Skip segments that START within the overlap zone — they were already
+                # emitted by the previous chunk.
+                valid_segs = [seg for seg in segs_gen if seg.start >= overlap_secs]
+            detected_lang = info.language
 
             if diarize and diar_pipeline is not None and valid_segs:
                 import torch
@@ -684,19 +789,25 @@ class Audio2TextApp(tk.Tk):
                 labeled = _assign_speakers(valid_segs, diarization)
                 text = _format_labeled_segments(labeled)
                 if text:
+                    # Diarized output uses block (speaker-label) layout; clear any
+                    # unspeakered streaming preview before appending the labeled block.
+                    self.after(0, self._clear_preview)
                     self.after(0, lambda t=text: self._append_text(t, as_block=True))
                     self.after(0, self.status_var.set,
-                               f"Chunk #{chunk_num} done — detected: {info.language} | recording…")
+                               f"Chunk #{chunk_num} done — detected: {detected_lang} | recording…")
                 else:
+                    self.after(0, self._clear_preview)
                     self.after(0, self.status_var.set,
                                f"Chunk #{chunk_num}: no speech detected | recording…")
             else:
                 text = " ".join(seg.text.strip() for seg in valid_segs)
                 if text:
-                    self.after(0, self._append_text, text)
+                    # Replace the pending preview (grey italic) with finalized text.
+                    self.after(0, self._finalize_preview, text)
                     self.after(0, self.status_var.set,
-                               f"Chunk #{chunk_num} done — detected: {info.language} | recording…")
+                               f"Chunk #{chunk_num} done — detected: {detected_lang} | recording…")
                 else:
+                    self.after(0, self._clear_preview)
                     self.after(0, self.status_var.set,
                                f"Chunk #{chunk_num}: no speech detected | recording…")
         except Exception as exc:
@@ -756,6 +867,52 @@ class Audio2TextApp(tk.Tk):
         self.text.see(tk.END)
         self.text.config(state=tk.DISABLED)
         self.copy_btn.config(state=tk.NORMAL)
+
+    def _update_preview(self, text, gen):
+        """Replace the current pending preview with *text* in grey italic.
+
+        Called from the Tk event loop via self.after(); safe to mutate widgets.
+        The gen argument guards against stale after() calls from a previous chunk.
+        """
+        if gen != self._preview_gen:
+            return
+        self.text.config(state=tk.NORMAL)
+        if self._preview_start_mark is not None:
+            # Delete from the mark to end, then reinsert at the same anchor position.
+            self.text.delete(self._preview_start_mark, tk.END)
+        else:
+            tail = self.text.get("end-2c", "end-1c")
+            if tail and tail not in ("\n", " "):
+                self.text.insert(tk.END, " ")
+            self.text.mark_set("pending_preview", tk.END)
+            self.text.mark_gravity("pending_preview", tk.LEFT)
+            self._preview_start_mark = "pending_preview"
+        self.text.insert(tk.END, text, "pending")
+        self.text.see(tk.END)
+        self.text.config(state=tk.DISABLED)
+
+    def _finalize_preview(self, text):
+        """Replace any pending preview with *text* in normal (finalized) style."""
+        self.text.config(state=tk.NORMAL)
+        if self._preview_start_mark is not None:
+            self.text.delete(self._preview_start_mark, tk.END)
+            self._preview_start_mark = None
+        else:
+            tail = self.text.get("end-2c", "end-1c")
+            if tail and tail not in ("\n", " "):
+                self.text.insert(tk.END, " ")
+        self.text.insert(tk.END, text)
+        self.text.see(tk.END)
+        self.text.config(state=tk.DISABLED)
+        self.copy_btn.config(state=tk.NORMAL)
+
+    def _clear_preview(self):
+        """Remove the pending preview when the finalized chunk contained no speech."""
+        if self._preview_start_mark is not None:
+            self.text.config(state=tk.NORMAL)
+            self.text.delete(self._preview_start_mark, tk.END)
+            self.text.config(state=tk.DISABLED)
+            self._preview_start_mark = None
 
     def _has_text(self):
         return bool(self.text.get("1.0", tk.END).strip())
