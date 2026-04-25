@@ -65,6 +65,7 @@ jobs:
             **First launch:** the app downloads the Whisper speech model (~250 MB for *small*, the new default) automatically.
 
             ### What's new in this release
+            - **Models stored next to the EXE** — downloaded model files are saved in a `models/` folder next to `audio2text-windows.exe`, not buried in your user profile
             - **Improved transcription quality** — default model upgraded from *tiny* to *small* (3–4× better accuracy); *large-v3* also available in the dropdown
             - **Audio normalisation** — quiet loopback audio (e.g. VoIP calls) is now boosted before transcription
             - **VAD filter** — silence and noise between speech segments no longer causes hallucinations

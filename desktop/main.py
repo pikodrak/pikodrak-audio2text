@@ -14,10 +14,18 @@ CHUNK_SECONDS = 8  # seconds buffered before each whisper pass (≥8s gives bett
 
 
 def _model_cache_dir():
-    """Return the faster-whisper / HuggingFace model cache directory."""
+    """Return the model cache directory.
+
+    Priority:
+    1. HF_HOME / HUGGINGFACE_HUB_CACHE env vars (explicit override)
+    2. <exe folder>/models/ when running as a PyInstaller bundle
+    3. ~/.cache/huggingface/hub/ when running from source
+    """
     hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
     if hf_home:
         return hf_home
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "models")
     return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
 
 
@@ -167,7 +175,7 @@ class Audio2TextApp(tk.Tk):
             cache = _model_cache_dir()
             self.after(0, self.status_var.set,
                        f"Loading '{model_name}' model — cache: {cache}")
-            model = WhisperModel(model_name, compute_type="float16")
+            model = WhisperModel(model_name, compute_type="float16", download_root=cache)
             self.after(0, self.status_var.set, "Transcribing…")
             segments, info = model.transcribe(
                 path, language=lang, beam_size=5, task=task, vad_filter=True)
@@ -218,7 +226,7 @@ class Audio2TextApp(tk.Tk):
             self.after(0, self.status_var.set,
                        f"Loading '{model_name}' model… (cache: {cache})")
 
-            model = WhisperModel(model_name, compute_type="float16")
+            model = WhisperModel(model_name, compute_type="float16", download_root=cache)
 
             self.after(0, self._log_info, "Model loaded. Opening audio device…\n")
             self.after(0, self.status_var.set, "Model loaded — opening audio device…")
