@@ -14,6 +14,12 @@ MIC_DEFAULT_LABEL = "System default"
 
 SAMPLE_RATE = 16000
 CHUNK_DEFAULT = 8  # seconds — default buffer size before each Whisper pass
+# Carry the last OVERLAP_SECS of each chunk into the next so words that fall at a
+# chunk boundary are not silently dropped by the VAD filter.
+OVERLAP_SECS = 1.0
+# VAD options for live chunks: lower min_speech catches short fragments at boundaries;
+# generous speech_pad prevents edge trimming.
+_LIVE_VAD_PARAMS = {"min_speech_duration_ms": 100, "speech_pad_ms": 400}
 
 
 def _model_cache_dir():
@@ -446,6 +452,7 @@ class Audio2TextApp(tk.Tk):
 
         chunk_frames = SAMPLE_RATE * chunk_secs
         chunk_num = 0
+        overlap = np.zeros(0, dtype="float32")
 
         with device.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
             buffer = []
@@ -463,32 +470,43 @@ class Audio2TextApp(tk.Tk):
 
                 if total >= chunk_frames:
                     chunk_num += 1
-                    chunk = np.concatenate(buffer)
+                    new_audio = np.concatenate(buffer)
                     buffer = []
+                    chunk = np.concatenate([overlap, new_audio]) if len(overlap) else new_audio
+                    overlap_secs = len(overlap) / SAMPLE_RATE
+                    overlap = new_audio[-int(SAMPLE_RATE * OVERLAP_SECS):]
                     # Normalize: boost quiet audio and prevent clipping
                     peak = float(np.max(np.abs(chunk)))
                     if peak > 1e-6:
                         chunk = chunk / peak * 0.95
                     self.after(0, self.status_var.set,
                                f"Processing chunk #{chunk_num}…")
-                    self._process_chunk(model, chunk, lang, task, chunk_num)
+                    self._process_chunk(model, chunk, lang, task, chunk_num, overlap_secs)
 
         # Flush remaining audio when stopped
         if buffer:
             remaining = np.concatenate(buffer)
             if len(remaining) > SAMPLE_RATE // 2:
                 chunk_num += 1
-                peak = float(np.max(np.abs(remaining)))
+                chunk = np.concatenate([overlap, remaining]) if len(overlap) else remaining
+                overlap_secs = len(overlap) / SAMPLE_RATE
+                peak = float(np.max(np.abs(chunk)))
                 if peak > 1e-6:
-                    remaining = remaining / peak * 0.95
+                    chunk = chunk / peak * 0.95
                 self.after(0, self.status_var.set, "Processing final chunk…")
-                self._process_chunk(model, remaining, lang, task, chunk_num)
+                self._process_chunk(model, chunk, lang, task, chunk_num, overlap_secs)
 
-    def _process_chunk(self, model, audio, lang, task, chunk_num=0):
+    def _process_chunk(self, model, audio, lang, task, chunk_num=0, overlap_secs=0.0):
         try:
             segments, info = model.transcribe(
-                audio, language=lang, beam_size=5, task=task, vad_filter=True)
-            text = " ".join(seg.text.strip() for seg in segments)
+                audio, language=lang, beam_size=5, task=task,
+                vad_filter=True, vad_parameters=_LIVE_VAD_PARAMS)
+            # Skip segments that end within the overlap zone — they were already
+            # emitted by the previous chunk.  Segments that end after the overlap
+            # boundary are new content (including words that bridged the boundary).
+            text = " ".join(
+                seg.text.strip() for seg in segments if seg.end > overlap_secs
+            )
             if text:
                 self.after(0, self._append_text, text)
                 self.after(0, self.status_var.set,
