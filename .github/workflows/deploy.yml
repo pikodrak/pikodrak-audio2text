@@ -64,8 +64,12 @@ jobs:
 
             **First launch:** the app downloads the Whisper speech model (~250 MB for *small*, the new default) automatically.
 
-            ### What's new in v0.6.5
-            - **Missing words fixed** — words spoken at a chunk boundary are no longer silently dropped; a 1-second overlap between chunks ensures the VAD filter sees every word in full context
+            ### What's new in v0.6.6
+            - **Word duplication fixed** — with continuous speech, the same phrase no longer appears twice across a chunk boundary
+            - **Natural text flow** — transcription output is now continuous prose instead of one hard line per chunk
+
+            ### What was new in v0.6.5
+            - **Missing words fixed** — words spoken at a chunk boundary are no longer silently dropped; overlap between chunks ensures the VAD filter sees every word in full context
 
             ### What was new in v0.6.4
             - **Configurable chunk / buffer size** — new Chunk dropdown (3 s / 5 s / 8 s / 15 s / 30 s) lets you tune latency vs. accuracy; hover for a tooltip explaining the tradeoff
