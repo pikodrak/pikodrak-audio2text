@@ -62,9 +62,13 @@ jobs:
 
             Download `audio2text-windows.exe` and run it directly — no installation required.
 
-            **First launch:** the app downloads the Whisper speech model (~75 MB for *tiny*) automatically.
+            **First launch:** the app downloads the Whisper speech model (~250 MB for *small*, the new default) automatically.
 
             ### What's new in this release
+            - **Improved transcription quality** — default model upgraded from *tiny* to *small* (3–4× better accuracy); *large-v3* also available in the dropdown
+            - **Audio normalisation** — quiet loopback audio (e.g. VoIP calls) is now boosted before transcription
+            - **VAD filter** — silence and noise between speech segments no longer causes hallucinations
+            - **Longer audio chunks** — 8 s chunks (up from 5 s) give Whisper more context for accurate word boundaries
             - **System audio (loopback) capture** — transcribe/translate incoming speech from WhatsApp, Teams, Zoom, and other VoIP calls in real time via WASAPI loopback (no extra installs)
             - **Microphone live capture** — stream microphone input directly to Whisper
             - **Translate to English** — one-click toggle translates any detected language to English using Whisper's built-in translate mode
