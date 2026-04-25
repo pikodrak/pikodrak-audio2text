@@ -256,8 +256,7 @@ class Audio2TextApp(tk.Tk):
             default_speaker = sc.default_speaker()
         except Exception as exc:
             raise RuntimeError(
-                f"Cannot find a default audio output device.\n\n"
-                f"soundcard error: {exc}\n\n"
+                "Cannot find a default audio output device.\n\n"
                 "Make sure Windows has a default playback device set:\n"
                 "  Start → Settings → Sound → Output"
             ) from exc
@@ -268,7 +267,6 @@ class Audio2TextApp(tk.Tk):
         except Exception as exc:
             raise RuntimeError(
                 f"Cannot open WASAPI loopback on '{speaker_name}'.\n\n"
-                f"soundcard error: {exc}\n\n"
                 "Possible fixes:\n"
                 "  • Update your audio driver (Realtek, IDT, etc.)\n"
                 "  • Control Panel → Sound → Recording → enable 'Stereo Mix'\n"
@@ -288,10 +286,11 @@ class Audio2TextApp(tk.Tk):
             mic = sc.default_microphone()
         except Exception as exc:
             raise RuntimeError(
-                f"Cannot find a default microphone.\n\n"
-                f"soundcard error: {exc}\n\n"
-                "Make sure a microphone is connected and set as the default recording device:\n"
-                "  Start → Settings → Sound → Input"
+                "No default microphone found.\n\n"
+                "To fix: go to Start → Settings → Sound → Input,\n"
+                "connect a microphone and set it as the default recording device.\n\n"
+                "You can also close this dialog and switch to\n"
+                "'System audio (loopback)' to capture desktop audio instead."
             ) from exc
 
         self.after(0, self._log_info,
