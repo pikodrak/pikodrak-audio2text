@@ -1,5 +1,11 @@
 from config import DIAR_MODEL_ID
 
+try:
+    import pyannote.audio  # noqa: F401
+    DIARIZATION_AVAILABLE = True
+except Exception:
+    DIARIZATION_AVAILABLE = False
+
 _pipeline_cache = None
 _pipeline_token = None
 
