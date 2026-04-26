@@ -269,7 +269,13 @@ class Audio2TextApp(tk.Tk):
         # Per-session speaker label mapping for cross-chunk consistency
         self._speaker_label_map = {}
         self._build_ui()
-        self._apply_settings(config.load_settings())
+        _raw = config.load_settings()
+        _settings = config.sanitize_settings(_raw, diarization_available=diar.DIARIZATION_AVAILABLE)
+        self._apply_settings(_settings)
+        # Persist sanitized settings immediately so future runs start clean even
+        # if the app exits abnormally before _on_close can write them.
+        if _settings is not _raw and _raw.get("diarize"):
+            self._save_settings()
         self._on_source_change()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

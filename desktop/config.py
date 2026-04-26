@@ -138,6 +138,21 @@ def load_settings():
     return data
 
 
+def sanitize_settings(data, *, diarization_available=True):
+    """Return a copy of data with settings that require unavailable features forced off.
+
+    Pass diarization_available=False (EXE mode) to clear any stale diarize=True
+    entry before it reaches the UI or transcription code, preventing a pyannote
+    import error even when the user has old settings saved from a source-code run.
+    """
+    if diarization_available:
+        return data
+    out = dict(data)
+    out["diarize"] = False
+    out["speaker_mode"] = "Auto"
+    return out
+
+
 def save_settings(data):
     """Persist settings to JSON. HF token is never written here (use keyring)."""
     try:
