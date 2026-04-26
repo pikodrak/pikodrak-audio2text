@@ -10,6 +10,9 @@ for pkg in ('faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub',
     binaries += b
     hiddenimports += h
 
+# Bundle the diarization runner so it can be extracted beside the EXE at runtime.
+datas += [('audio2text_diarize.py', '.')]
+
 a = Analysis(
     ['main.py'],
     pathex=[],
