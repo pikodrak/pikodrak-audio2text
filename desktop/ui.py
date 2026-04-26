@@ -32,69 +32,6 @@ class _ToolTip:
             self._tip = None
 
 
-class _DiarizationDownloadDialog(tk.Toplevel):
-    """Modal progress dialog for the one-time pyannote.audio runtime download."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("Setting up diarization")
-        self.resizable(False, False)
-        self.grab_set()
-        self.protocol("WM_DELETE_WINDOW", lambda: None)  # no closing during install
-        self._parent = parent
-        self._build()
-        self.transient(parent)
-        self.wait_visibility()
-        self.update_idletasks()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        sw, sh = self.winfo_width(), self.winfo_height()
-        self.geometry(f"+{px + (pw - sw)//2}+{py + (ph - sh)//2}")
-        diar.install_pyannote(done_callback=self._on_done)
-
-    def _build(self):
-        ttk.Label(self,
-                  text="Downloading and installing pyannote.audio + PyTorch…",
-                  padding=(14, 10, 14, 2)).pack()
-        ttk.Label(self,
-                  text="One-time download (~2 GB). Please wait — this may take several minutes.",
-                  foreground="#555555", font=("Segoe UI", 8),
-                  wraplength=380, padding=(14, 0, 14, 8)).pack()
-        self._bar = ttk.Progressbar(self, mode="indeterminate", length=400)
-        self._bar.pack(padx=14, pady=(0, 8))
-        self._bar.start(10)
-        self._status_lbl = ttk.Label(
-            self, text="Starting installation…", foreground="#444444",
-            padding=(14, 0, 14, 6))
-        self._status_lbl.pack()
-        self._btn_frame = ttk.Frame(self)
-        self._btn_frame.pack(pady=(0, 12))
-
-    def _on_done(self, success, error):
-        self.after(0, self._finish, success, error)
-
-    def _finish(self, success, error):
-        self._bar.stop()
-        if success:
-            self._status_lbl.config(text="Installation complete!", foreground="#006600")
-            self.protocol("WM_DELETE_WINDOW", self._close_success)
-            ttk.Button(self._btn_frame, text="OK", command=self._close_success,
-                       width=10).pack()
-        else:
-            self._status_lbl.config(text="Installation failed.", foreground="#cc0000")
-            detail = (error or "Unknown error")[:300]
-            ttk.Label(self._btn_frame, text=detail, foreground="#aa0000",
-                      wraplength=380, font=("Segoe UI", 8)).pack(pady=(0, 4))
-            self.protocol("WM_DELETE_WINDOW", self.destroy)
-            ttk.Button(self._btn_frame, text="Close", command=self.destroy,
-                       width=10).pack()
-
-    def _close_success(self):
-        if hasattr(self._parent, "_on_diarization_installed"):
-            self._parent._on_diarization_installed()
-        self.destroy()
-
-
 class SettingsDialog(tk.Toplevel):
     """Modal dialog for advanced settings: beam size, output format, diarization config."""
 
@@ -111,7 +48,6 @@ class SettingsDialog(tk.Toplevel):
         self.transient(parent)
         self.wait_visibility()
         self.update_idletasks()
-        # Center over parent
         pw, ph = parent.winfo_width(), parent.winfo_height()
         px, py = parent.winfo_rootx(), parent.winfo_rooty()
         sw, sh = self.winfo_width(), self.winfo_height()
@@ -161,10 +97,11 @@ class SettingsDialog(tk.Toplevel):
                                          variable=self.diarize_var,
                                          command=self._on_diarize_toggle)
         self._diar_chk.pack(anchor=tk.W)
+
         if not diar.DIARIZATION_AVAILABLE:
             self._diar_status_lbl = ttk.Label(
                 df,
-                text="First-time setup: click above to download PyTorch + pyannote (~2 GB).",
+                text="Downloading PyTorch + pyannote.audio (~2 GB)…",
                 foreground="#886600",
                 font=("Segoe UI", 8, "italic"),
                 wraplength=380)
@@ -253,12 +190,8 @@ class SettingsDialog(tk.Toplevel):
         self._refresh_beam_hint()
 
     def _on_diarize_toggle(self):
-        if self.diarize_var.get() and not diar.DIARIZATION_AVAILABLE:
-            # User checked the box but pyannote isn't installed yet — start download
-            self.diarize_var.set(False)
-            _DiarizationDownloadDialog(self)
-            return
-        state = "normal" if self.diarize_var.get() else "disabled"
+        enabled = self.diarize_var.get() and diar.DIARIZATION_AVAILABLE
+        state = "normal" if enabled else "disabled"
         for child in self._hf_row.winfo_children():
             try:
                 child.config(state=state)
@@ -272,7 +205,7 @@ class SettingsDialog(tk.Toplevel):
         self._on_speaker_mode_change()
 
     def _on_diarization_installed(self):
-        """Called after a successful pyannote.audio install via _DiarizationDownloadDialog."""
+        """Called when the background download completes successfully."""
         if self._diar_status_lbl is not None:
             self._diar_status_lbl.config(
                 text="Diarization installed — enable it below.",
@@ -282,7 +215,7 @@ class SettingsDialog(tk.Toplevel):
 
     def _on_speaker_mode_change(self, _event=None):
         mode = self.speaker_mode_var.get()
-        enabled = self.diarize_var.get()
+        enabled = self.diarize_var.get() and diar.DIARIZATION_AVAILABLE
 
         self._custom_row.pack_forget()
         self._names_row.pack_forget()
@@ -298,8 +231,7 @@ class SettingsDialog(tk.Toplevel):
         token = self.hf_token_var.get().strip()
         ok = config.save_hf_token(token)
         if ok:
-            messagebox.showinfo("Saved", "HF token saved to OS keyring.",
-                                parent=self)
+            messagebox.showinfo("Saved", "HF token saved to OS keyring.", parent=self)
         else:
             messagebox.showwarning(
                 "Keyring unavailable",
@@ -321,13 +253,10 @@ class SettingsDialog(tk.Toplevel):
         p.custom_speaker_count_var.set(self.custom_count_var.get())
         p.speaker_a_name_var.set(self.speaker_a_var.get().strip() or "Person A")
         p.speaker_b_name_var.set(self.speaker_b_var.get().strip() or "Person B")
-        # If diarization was just installed this session, re-enable the main checkbox
         if diar.DIARIZATION_AVAILABLE and hasattr(p, "_diar_cb"):
             p._diar_cb.config(state="normal")
-        # Sync diarization toggle visibility in main window
         p._on_diarize_toggle()
         self._saved = True
-        # Invalidate cached pipeline when token changes
         diar.reset_cache()
         self.destroy()
 
@@ -342,25 +271,25 @@ class Audio2TextApp(tk.Tk):
         self.geometry("740x660")
         self.resizable(True, True)
         self._recording = False
-        # Streaming preview state — shared between capture and preview threads
         self._whisper_lock = threading.Lock()
         self._buffer_lock = threading.Lock()
         self._live_buffer = []
         self._current_overlap = None
         self._preview_start_mark = None
         self._preview_gen = 0
-        # Per-session speaker label mapping for cross-chunk consistency
         self._speaker_label_map = {}
+        self._diar_downloading = False
+        self._settings_dialog = None  # track open settings dialog
         self._build_ui()
         _raw = config.load_settings()
         _settings = config.sanitize_settings(_raw, diarization_available=diar.DIARIZATION_AVAILABLE)
         self._apply_settings(_settings)
-        # Persist sanitized settings immediately so future runs start clean even
-        # if the app exits abnormally before _on_close can write them.
         if _settings is not _raw and _raw.get("diarize"):
             self._save_settings()
         self._on_source_change()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Auto-start download if diarize was enabled and venv not ready
+        self.after(200, self._maybe_auto_download)
 
     # ──────────────────────────────────────────────────── UI construction ──
 
@@ -398,7 +327,7 @@ class Audio2TextApp(tk.Tk):
         ttk.Button(self._device_row, text="↺", width=2,
                    command=self._refresh_mics).pack(side=tk.LEFT)
 
-        # Options row: model, language, chunk, settings button
+        # Options row
         opts = ttk.Frame(self, padding=(10, 6, 10, 4))
         opts.pack(fill=tk.X)
 
@@ -433,7 +362,7 @@ class Audio2TextApp(tk.Tk):
 
         ttk.Button(opts, text="Settings…", command=self._open_settings).pack(side=tk.LEFT)
 
-        # Diarization row: toggle + speaker mode (shown when diarization on)
+        # Diarization row
         diar_row = ttk.Frame(self, padding=(10, 0, 10, 4))
         diar_row.pack(fill=tk.X)
 
@@ -448,7 +377,7 @@ class Audio2TextApp(tk.Tk):
             self._diar_cb.config(state="disabled")
             _ToolTip(self._diar_cb,
                      "Speaker diarization not yet installed.\n\n"
-                     "Open Settings → Diarization to download (~2 GB, one-time).")
+                     "Downloading automatically in the background (~2 GB).")
         else:
             _ToolTip(self._diar_cb,
                      "Label each segment with the speaker ID.\n\n"
@@ -457,7 +386,7 @@ class Audio2TextApp(tk.Tk):
                      "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
                      "First run downloads the model (~1–2 GB).")
 
-        # Speaker mode selector — visible when diarization is enabled
+        # Speaker mode selector
         self._speaker_mode_frame = ttk.Frame(diar_row)
         ttk.Label(self._speaker_mode_frame, text="  Mode:").pack(side=tk.LEFT)
         self.speaker_mode_var = tk.StringVar(value="Auto")
@@ -471,7 +400,7 @@ class Audio2TextApp(tk.Tk):
                  "  → Use 4–6s chunks for best dialogue accuracy.\n"
                  "Custom: force a specific speaker count (set in Settings).")
 
-        # Hidden vars — set via SettingsDialog, used during transcription
+        # Hidden vars
         self.hf_token_var = tk.StringVar()
         self.beam_size_var = tk.IntVar(value=5)
         self.translate_var = tk.BooleanVar(value=False)
@@ -505,14 +434,67 @@ class Audio2TextApp(tk.Tk):
         self.text.tag_config("pending", foreground="#999999",
                              font=("Segoe UI", 10, "italic"))
 
+        # Status bar — frame so we can add a Retry button on failure
+        self._status_frame = ttk.Frame(self)
+        self._status_frame.pack(fill=tk.X, side=tk.BOTTOM)
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN,
-                  anchor=tk.W, padding=(6, 2)).pack(fill=tk.X, side=tk.BOTTOM)
+        self._status_lbl = ttk.Label(self._status_frame, textvariable=self.status_var,
+                                     relief=tk.SUNKEN, anchor=tk.W, padding=(6, 2))
+        self._status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._retry_btn = ttk.Button(self._status_frame, text="Retry",
+                                     command=self._start_diar_download)
+        # Not packed until a download failure
+
+    # ──────────────────────────────────────────────────── Auto-download ──
+
+    def _maybe_auto_download(self):
+        """Start background diarization download if enabled in settings but not installed."""
+        if diar.DIARIZATION_AVAILABLE or self._diar_downloading:
+            return
+        if not getattr(sys, "frozen", False):
+            return  # Source mode: install pyannote manually
+        if self.diarize_var.get():
+            self._start_diar_download()
+
+    def _start_diar_download(self):
+        if self._diar_downloading:
+            return
+        self._diar_downloading = True
+        self._retry_btn.pack_forget()
+        self.status_var.set("Downloading diarization (PyTorch + pyannote.audio ~2 GB)…")
+        diar.setup_venv(
+            progress_callback=self._on_diar_progress,
+            done_callback=self._on_diar_done,
+        )
+
+    def _on_diar_progress(self, message):
+        self.after(0, self.status_var.set, f"Diarization: {message}")
+
+    def _on_diar_done(self, success, error):
+        self.after(0, self._finish_diar_download, success, error)
+
+    def _finish_diar_download(self, success, error):
+        self._diar_downloading = False
+        if success:
+            self.status_var.set("Diarization ready")
+            self._diar_cb.config(state="normal")
+            self.diarize_var.set(True)
+            self._on_diarize_toggle()
+            # Notify open settings dialog if any
+            sd = self._settings_dialog
+            if sd and sd.winfo_exists() and hasattr(sd, "_on_diarization_installed"):
+                sd._on_diarization_installed()
+        else:
+            short = (error or "Unknown error")[:120]
+            if "Python 3 not found" in (error or ""):
+                self.status_var.set("Install Python from python.org to enable diarization")
+            else:
+                self.status_var.set(f"Diarization download failed — {short}")
+            self._retry_btn.pack(side=tk.RIGHT, padx=(4, 4))
 
     # ──────────────────────────────────────────────────── Settings ──
 
     def _apply_settings(self, s):
-        """Apply a settings dict to all UI variables."""
         if s.get("model") in config.MODELS:
             self.model_var.set(s["model"])
         if s.get("language") in config.LANGUAGES:
@@ -576,7 +558,7 @@ class Audio2TextApp(tk.Tk):
         self.destroy()
 
     def _open_settings(self):
-        SettingsDialog(self)
+        self._settings_dialog = SettingsDialog(self)
 
     def _on_model_change(self, _event=None):
         hint = config.MODEL_HINTS.get(self.model_var.get(), "")
@@ -601,6 +583,11 @@ class Audio2TextApp(tk.Tk):
     def _on_diarize_toggle(self):
         if self.diarize_var.get():
             self._speaker_mode_frame.pack(side=tk.LEFT)
+            # If diarize just got enabled and venv not ready, kick off download
+            if not diar.DIARIZATION_AVAILABLE:
+                self.diarize_var.set(False)
+                self._speaker_mode_frame.pack_forget()
+                self._start_diar_download()
         else:
             self._speaker_mode_frame.pack_forget()
         diar.reset_cache()
@@ -690,17 +677,10 @@ class Audio2TextApp(tk.Tk):
                            "Loading diarization model… (first run downloads ~1–2 GB)")
                 min_s, max_s = diar.speaker_constraints(
                     speaker_mode, self.custom_speaker_count_var.get())
-                pipeline = diar.get_pipeline(hf_token)
-                self.after(0, self.status_var.set, "Running speaker diarization…")
-                diar_kwargs = {}
-                if min_s is not None:
-                    diar_kwargs["min_speakers"] = min_s
-                if max_s is not None:
-                    diar_kwargs["max_speakers"] = max_s
-                diarization = pipeline(path, **diar_kwargs)
+                diarization_result = diar.run_diarize(path, hf_token, min_s, max_s)
                 label_map = {}
                 labeled = diar.assign_speakers(
-                    segments, diarization,
+                    segments, diarization_result,
                     speaker_mode=speaker_mode,
                     two_person_names=two_person_names,
                     label_map=label_map,
@@ -738,6 +718,7 @@ class Audio2TextApp(tk.Tk):
             target=self._live_loop, args=(source, chunk_secs), daemon=True).start()
 
     def _live_loop(self, source, chunk_secs):
+        diar_worker = None
         try:
             import numpy as np
             from faster_whisper import WhisperModel
@@ -769,13 +750,19 @@ class Audio2TextApp(tk.Tk):
 
             model = WhisperModel(model_name, compute_type="float16", download_root=cache)
 
-            diar_pipeline = None
             if do_diarize:
-                self.after(0, self._log_info,
-                           "Loading diarization model… (first run downloads ~1–2 GB)\n")
-                self.after(0, self.status_var.set, "Loading diarization model…")
-                diar_pipeline = diar.get_pipeline(hf_token)
-                self.after(0, self._log_info, "Diarization model loaded.\n")
+                if getattr(sys, "frozen", False):
+                    self.after(0, self._log_info,
+                               "Starting diarization worker… (first chunk loads model)\n")
+                    self.after(0, self.status_var.set, "Starting diarization worker…")
+                    diar_worker = diar.DiarizeWorker()
+                    diar_worker.start(hf_token)
+                else:
+                    self.after(0, self._log_info,
+                               "Loading diarization model… (first run downloads ~1–2 GB)\n")
+                    self.after(0, self.status_var.set, "Loading diarization model…")
+                    diar.preload_pipeline(hf_token)
+                    self.after(0, self._log_info, "Diarization model loaded.\n")
 
             self.after(0, self._log_info, "Model loaded. Opening audio device…\n")
             self.after(0, self.status_var.set, "Model loaded — opening audio device…")
@@ -783,11 +770,11 @@ class Audio2TextApp(tk.Tk):
             if source == "System audio (loopback)":
                 self._capture_loopback(
                     model, lang, task, chunk_secs, beam_size,
-                    do_diarize, diar_pipeline, speaker_mode)
+                    do_diarize, hf_token, speaker_mode, diar_worker)
             else:
                 self._capture_microphone(
                     model, lang, task, chunk_secs, beam_size,
-                    do_diarize, diar_pipeline, speaker_mode)
+                    do_diarize, hf_token, speaker_mode, diar_worker)
 
         except ImportError as exc:
             msg = (
@@ -800,10 +787,12 @@ class Audio2TextApp(tk.Tk):
             self.after(0, self._on_error, str(exc))
         finally:
             self._recording = False
+            if diar_worker:
+                diar_worker.stop()
             self.after(0, self._on_live_stopped)
 
     def _capture_loopback(self, model, lang, task, chunk_secs, beam_size,
-                          diarize, diar_pipeline, speaker_mode):
+                          diarize, hf_token, speaker_mode, diar_worker):
         import soundcard as sc
 
         try:
@@ -854,10 +843,10 @@ class Audio2TextApp(tk.Tk):
                    f"Loopback device: {speaker_name}\nRecording… (speak during your call)\n")
         self.after(0, self.status_var.set, f"Recording loopback: {speaker_name}")
         self._run_capture(loopback, model, lang, task, chunk_secs, beam_size,
-                          diarize, diar_pipeline, speaker_mode)
+                          diarize, hf_token, speaker_mode, diar_worker)
 
     def _capture_microphone(self, model, lang, task, chunk_secs, beam_size,
-                            diarize, diar_pipeline, speaker_mode):
+                            diarize, hf_token, speaker_mode, diar_worker):
         import soundcard as sc
 
         selected = self.mic_var.get()
@@ -886,10 +875,10 @@ class Audio2TextApp(tk.Tk):
         self.after(0, self._log_info, f"Microphone: {mic.name}\nRecording…\n")
         self.after(0, self.status_var.set, f"Recording microphone: {mic.name}")
         self._run_capture(mic, model, lang, task, chunk_secs, beam_size,
-                          diarize, diar_pipeline, speaker_mode)
+                          diarize, hf_token, speaker_mode, diar_worker)
 
     def _run_capture(self, device, model, lang, task, chunk_secs, beam_size,
-                     do_diarize, diar_pipeline, speaker_mode):
+                     do_diarize, hf_token, speaker_mode, diar_worker):
         import numpy as np
 
         chunk_frames = config.SAMPLE_RATE * chunk_secs
@@ -938,7 +927,8 @@ class Audio2TextApp(tk.Tk):
                         chunk = chunk / peak * 0.95
                     self.after(0, self.status_var.set, f"Processing chunk #{chunk_num}…")
                     self._process_chunk(model, chunk, lang, task, beam_size, chunk_num,
-                                        overlap_secs, do_diarize, diar_pipeline, speaker_mode)
+                                        overlap_secs, do_diarize, hf_token,
+                                        speaker_mode, diar_worker)
 
         # Flush remaining audio
         if buffer:
@@ -955,13 +945,13 @@ class Audio2TextApp(tk.Tk):
                     chunk = chunk / peak * 0.95
                 self.after(0, self.status_var.set, "Processing final chunk…")
                 self._process_chunk(model, chunk, lang, task, beam_size, chunk_num,
-                                    overlap_secs, do_diarize, diar_pipeline, speaker_mode)
+                                    overlap_secs, do_diarize, hf_token,
+                                    speaker_mode, diar_worker)
 
         with self._buffer_lock:
             self._live_buffer = []
 
     def _preview_loop(self, model, lang, task, beam_size):
-        """Greedy Whisper every PREVIEW_INTERVAL_SECS on accumulating buffer → grey italic."""
         import time
         import numpy as np
 
@@ -1011,8 +1001,8 @@ class Audio2TextApp(tk.Tk):
                 self.after(0, self._update_preview, text, gen)
 
     def _process_chunk(self, model, audio, lang, task, beam_size, chunk_num=0,
-                       overlap_secs=0.0, do_diarize=False, diar_pipeline=None,
-                       speaker_mode="Auto"):
+                       overlap_secs=0.0, do_diarize=False, hf_token="",
+                       speaker_mode="Auto", diar_worker=None):
         try:
             with self._whisper_lock:
                 segs_gen, info = model.transcribe(
@@ -1021,25 +1011,18 @@ class Audio2TextApp(tk.Tk):
                 valid_segs = [seg for seg in segs_gen if seg.start >= overlap_secs]
             detected_lang = info.language
 
-            if do_diarize and diar_pipeline is not None and valid_segs:
-                import torch
+            if do_diarize and valid_segs:
                 two_person_names = (
                     (self.speaker_a_name_var.get(), self.speaker_b_name_var.get())
                     if speaker_mode == "Two persons" else None
                 )
-                audio_tensor = torch.from_numpy(audio[None, :])
                 min_s, max_s = diar.speaker_constraints(
                     speaker_mode, self.custom_speaker_count_var.get())
-                diar_kwargs = {}
-                if min_s is not None:
-                    diar_kwargs["min_speakers"] = min_s
-                if max_s is not None:
-                    diar_kwargs["max_speakers"] = max_s
-                diarization = diar_pipeline(
-                    {"waveform": audio_tensor, "sample_rate": config.SAMPLE_RATE},
-                    **diar_kwargs)
+                diarization_result = diar.run_diarize_audio(
+                    audio, config.SAMPLE_RATE, hf_token,
+                    min_s, max_s, worker=diar_worker)
                 labeled = diar.assign_speakers(
-                    valid_segs, diarization,
+                    valid_segs, diarization_result,
                     speaker_mode=speaker_mode,
                     two_person_names=two_person_names,
                     label_map=self._speaker_label_map,
