@@ -1,1 +1,7 @@
 faster-whisper
+soundcard
+numpy
+keyring
+# Optional — speaker diarization (adds ~2 GB PyTorch; not included in bundled EXE):
+# pip install pyannote.audio
+# Also requires accepting the model license at huggingface.co/pyannote/speaker-diarization-3.1

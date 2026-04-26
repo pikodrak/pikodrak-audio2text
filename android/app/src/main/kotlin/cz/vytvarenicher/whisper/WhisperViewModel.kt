@@ -30,12 +30,12 @@ private const val MODEL_NAME = "ggml-tiny.bin"
 
 // Sliding window: transcribe at most 30 s at a time so inference stays fast on-device
 private const val STREAM_WINDOW_SAMPLES = SAMPLE_RATE * 30
-private const val STREAM_INTERVAL_MS = 3_000L
+private const val STREAM_INTERVAL_MS = 2_000L
 
 sealed class TranscribeState {
     object Idle : TranscribeState()
     data class Transcribing(val step: String = "") : TranscribeState()
-    /** Live partial result updated every ~3 s while the microphone is still open. */
+    /** Live partial result updated every ~2 s while the microphone is still open. */
     data class Streaming(val text: String) : TranscribeState()
     data class Result(val text: String) : TranscribeState()
     data class Error(val message: String) : TranscribeState()

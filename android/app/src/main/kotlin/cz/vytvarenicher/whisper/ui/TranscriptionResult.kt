@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import cz.vytvarenicher.whisper.TranscribeState
 
@@ -33,7 +34,7 @@ internal fun TranscriptionResult(
             }
 
             // Live partial result shown while the microphone is still open.
-            // Text updates ~every 3 s via sliding-window inference.
+            // Text updates ~every 2 s via sliding-window inference.
             is TranscribeState.Streaming -> {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -58,6 +59,11 @@ internal fun TranscriptionResult(
                         label = { Text("Live transcript") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
+                        // Pending / in-progress text: grey italic to signal it may change
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.outline,
+                            fontStyle = FontStyle.Italic,
+                        ),
                     )
                 }
             }

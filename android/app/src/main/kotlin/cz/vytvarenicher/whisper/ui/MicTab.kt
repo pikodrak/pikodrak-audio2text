@@ -44,7 +44,7 @@ fun MicTab(viewModel: WhisperViewModel, modifier: Modifier = Modifier) {
 
         if (!isRecording) {
             Text(
-                "Live transcription updates every ~3 s while recording.",
+                "Live transcription updates every ~2 s while recording.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
