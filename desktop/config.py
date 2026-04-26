@@ -45,20 +45,36 @@ DEFAULTS = {
 }
 
 
+def frozen_base_dir():
+    """Return the portable base directory for models/, settings.json, and diarize/.
+
+    Windows EXE: the folder containing audio2text-windows.exe.
+    macOS .app:  the folder containing Audio2Text.app (sys.executable lives 4
+                 levels deep inside the bundle: .app/Contents/MacOS/<binary>).
+    """
+    exe = sys.executable
+    if sys.platform == "darwin":
+        base = exe
+        for _ in range(4):
+            base = os.path.dirname(base)
+        return base
+    return os.path.dirname(exe)
+
+
 def model_cache_dir():
     hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
     if hf_home:
         return hf_home
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "models")
+        return os.path.join(frozen_base_dir(), "models")
     return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
 
 
 def config_path():
-    # Portable mode: EXE bundles store settings.json next to the executable so
-    # the whole folder (EXE + models/ + settings.json) is self-contained.
+    # Portable mode: bundles store settings.json next to the executable (Windows)
+    # or next to the .app bundle (macOS) so the distributable folder is self-contained.
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "settings.json")
+        return os.path.join(frozen_base_dir(), "settings.json")
     if sys.platform == "win32":
         base = os.environ.get("APPDATA", os.path.expanduser("~"))
     else:

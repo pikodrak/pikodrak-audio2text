@@ -1,13 +1,13 @@
 import sys
 import os
 
-from config import DIAR_MODEL_ID
+from config import DIAR_MODEL_ID, frozen_base_dir
 
 
 def _exe_diarize_dir():
-    """Return <exe_dir>/diarize path when running as a frozen EXE, else None."""
+    """Return <base>/diarize path when running as a frozen bundle, else None."""
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "diarize")
+        return os.path.join(frozen_base_dir(), "diarize")
     return None
 
 
