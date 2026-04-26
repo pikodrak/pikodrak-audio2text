@@ -1,4 +1,24 @@
+import sys
+import os
+
 from config import DIAR_MODEL_ID
+
+
+def _exe_diarize_dir():
+    """Return <exe_dir>/diarize path when running as a frozen EXE, else None."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "diarize")
+    return None
+
+
+def _probe_diarize_dir():
+    """Add <exe_dir>/diarize to sys.path if it exists (runtime-downloaded pyannote)."""
+    d = _exe_diarize_dir()
+    if d and os.path.isdir(d) and d not in sys.path:
+        sys.path.insert(0, d)
+
+
+_probe_diarize_dir()
 
 try:
     import pyannote.audio  # noqa: F401
@@ -123,8 +143,8 @@ def get_pipeline(hf_token):
             "Speaker diarization requires pyannote.audio.\n\n"
             "Install it with:\n"
             "    pip install pyannote.audio\n\n"
-            "Note: this pulls in PyTorch (~2 GB) and is not available\n"
-            "in the bundled EXE. Run from source to use diarization."
+            "Note: this pulls in PyTorch (~2 GB). In EXE mode use\n"
+            "Settings → Diarization → Download to set it up automatically."
         )
     if not hf_token:
         raise ValueError(
@@ -151,3 +171,62 @@ def reset_cache():
     global _pipeline_cache, _pipeline_token
     _pipeline_cache = None
     _pipeline_token = None
+
+
+def install_pyannote(done_callback=None):
+    """Download and install pyannote.audio + PyTorch into <exe_dir>/diarize/ (EXE only).
+
+    done_callback(success: bool, error: str | None) is invoked from a background
+    thread — callers must marshal back to the UI thread before touching widgets.
+    """
+    import threading
+    import io
+
+    diarize_dir = _exe_diarize_dir()
+    if not diarize_dir:
+        if done_callback:
+            done_callback(False, "Runtime download is only available in EXE mode")
+        return
+
+    def _run():
+        global DIARIZATION_AVAILABLE
+        cap = io.StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            os.makedirs(diarize_dir, exist_ok=True)
+            sys.stdout = sys.stderr = cap
+            from pip._internal.cli.main import main as pip_main
+            rc = pip_main([
+                "install",
+                "--target", diarize_dir,
+                "--no-user",
+                "--no-warn-script-location",
+                "-q",
+                "pyannote.audio",
+            ])
+        except Exception:
+            import traceback
+            sys.stdout, sys.stderr = old_out, old_err
+            if done_callback:
+                done_callback(False, traceback.format_exc())
+            return
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
+        if rc == 0:
+            if diarize_dir not in sys.path:
+                sys.path.insert(0, diarize_dir)
+            try:
+                import pyannote.audio  # noqa: F401
+                DIARIZATION_AVAILABLE = True
+                if done_callback:
+                    done_callback(True, None)
+            except Exception as exc:
+                if done_callback:
+                    done_callback(False, f"Packages installed but import failed: {exc}")
+        else:
+            pip_output = cap.getvalue().strip()
+            if done_callback:
+                done_callback(False, pip_output or f"pip returned exit code {rc}")
+
+    threading.Thread(target=_run, daemon=True).start()
