@@ -55,6 +55,10 @@ def model_cache_dir():
 
 
 def config_path():
+    # Portable mode: EXE bundles store settings.json next to the executable so
+    # the whole folder (EXE + models/ + settings.json) is self-contained.
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "settings.json")
     if sys.platform == "win32":
         base = os.environ.get("APPDATA", os.path.expanduser("~"))
     else:
