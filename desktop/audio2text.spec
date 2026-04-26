@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys as _sys
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
@@ -40,6 +41,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+_is_mac = _sys.platform == 'darwin'
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -47,10 +50,24 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='audio2text-windows',
+    name='audio2text-macos' if _is_mac else 'audio2text-windows',
     debug=False,
-    strip=False,
-    upx=True,
+    strip=_is_mac,
+    upx=not _is_mac,
     console=False,
     icon=None,
 )
+
+if _is_mac:
+    app = BUNDLE(
+        exe,
+        name='Audio2Text.app',
+        bundle_identifier='com.vytvareniher.audio2text',
+        info_plist={
+            'NSMicrophoneUsageDescription': (
+                'Audio2Text needs microphone access for live transcription.'
+            ),
+            'NSHighResolutionCapable': True,
+            'LSBackgroundOnly': False,
+        },
+    )

@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -808,6 +809,15 @@ class Audio2TextApp(tk.Tk):
         try:
             default_speaker = sc.default_speaker()
         except Exception as exc:
+            if sys.platform == "darwin":
+                raise RuntimeError(
+                    f"Cannot find a default audio output device.\n\nsoundcard error: {exc}\n\n"
+                    "On macOS, system audio loopback requires a virtual audio driver.\n\n"
+                    "Recommended: install BlackHole (free, open-source)\n"
+                    "  https://github.com/ExistentialAudio/BlackHole\n\n"
+                    "Then set BlackHole (or a Multi-Output Device that includes it)\n"
+                    "as your output device, and restart Audio2Text."
+                ) from exc
             raise RuntimeError(
                 f"Cannot find a default audio output device.\n\nsoundcard error: {exc}\n\n"
                 "Make sure Windows has a default playback device set:\n"
@@ -818,6 +828,19 @@ class Audio2TextApp(tk.Tk):
         try:
             loopback = sc.get_microphone(id=speaker_name, include_loopback=True)
         except Exception as exc:
+            if sys.platform == "darwin":
+                raise RuntimeError(
+                    f"Cannot open loopback on '{speaker_name}'.\n\n"
+                    f"soundcard error: {exc}\n\n"
+                    "macOS does not expose system audio natively.\n\n"
+                    "Fix: install BlackHole and route your output through it:\n"
+                    "  https://github.com/ExistentialAudio/BlackHole\n\n"
+                    "  1. Install BlackHole 2ch\n"
+                    "  2. Open Audio MIDI Setup → create a Multi-Output Device\n"
+                    "     (your speakers + BlackHole 2ch)\n"
+                    "  3. Set that Multi-Output Device as your system output\n"
+                    "  4. Restart Audio2Text"
+                ) from exc
             raise RuntimeError(
                 f"Cannot open WASAPI loopback on '{speaker_name}'.\n\n"
                 f"soundcard error: {exc}\n\n"
@@ -846,6 +869,13 @@ class Audio2TextApp(tk.Tk):
         except Exception as exc:
             label = selected if selected and selected != config.MIC_DEFAULT_LABEL \
                 else "default microphone"
+            if sys.platform == "darwin":
+                raise RuntimeError(
+                    f"Cannot open {label}.\n\nsoundcard error: {exc}\n\n"
+                    "Make sure a microphone is connected and allowed in:\n"
+                    "  System Settings → Privacy & Security → Microphone\n\n"
+                    "If the issue persists, try selecting a specific device from the dropdown."
+                ) from exc
             raise RuntimeError(
                 f"Cannot open {label}.\n\nsoundcard error: {exc}\n\n"
                 "Make sure a microphone is connected and set as the default recording device:\n"

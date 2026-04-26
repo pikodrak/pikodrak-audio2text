@@ -1,18 +1,79 @@
-name: Deploy Windows EXE
+name: Build and Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v0.5.0)'
+        description: 'Release version (e.g. v0.8.1)'
         required: true
-        default: 'v0.5.0'
+        default: 'v0.8.1'
   push:
     tags:
       - 'v*'
 
 jobs:
-  build-and-release:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Git tag (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag "${{ steps.tag.outputs.version }}" || true
+          git push origin "${{ steps.tag.outputs.version }}" || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.version }}
+          name: "Audio2Text ${{ steps.tag.outputs.version }}"
+          body: |
+            ## Audio2Text — Windows & macOS
+
+            | Platform | Download |
+            |----------|----------|
+            | Windows | `audio2text-windows.exe` — run directly, no install needed |
+            | macOS | `audio2text-macos.zip` — unzip, right-click → Open (see Gatekeeper note below) |
+
+            **First launch:** the app downloads the Whisper speech model automatically (~250 MB for *small*, the default).
+
+            ### macOS notes
+            - **Gatekeeper:** the app is unsigned. Right-click → Open → Open anyway on first launch.
+            - **System audio (loopback):** macOS does not support native loopback. Install [BlackHole](https://github.com/ExistentialAudio/BlackHole) (free), create a Multi-Output Device in Audio MIDI Setup, set it as your output, then use "System audio (loopback)" in the app. Microphone capture works natively.
+            - Models and `settings.json` are saved next to `Audio2Text.app` in the folder you unzipped to.
+
+            ### Windows notes
+            - System audio (loopback) works natively via WASAPI — no extra drivers needed.
+            - Models and `settings.json` are saved next to `audio2text-windows.exe`.
+
+            ### System requirements
+            - Windows 10 / 11 (x64)
+            - macOS 13+ Ventura (Apple Silicon and Intel)
+            - Internet connection on first run
+
+            ### Supported audio formats (file mode)
+            MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS
+          draft: false
+          prerelease: false
+
+  build-windows:
+    needs: create-release
     runs-on: windows-latest
     permissions:
       contents: write
@@ -33,66 +94,39 @@ jobs:
         working-directory: desktop
         run: pyinstaller audio2text.spec
 
-      - name: Determine version tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Git tag (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git tag "${{ steps.tag.outputs.version }}" || true
-          git push origin "${{ steps.tag.outputs.version }}" || true
-
-      - name: Create GitHub Release
+      - name: Upload Windows EXE to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.version }}
-          name: "Audio2Text ${{ steps.tag.outputs.version }} — Windows"
-          body: |
-            ## Audio2Text — Windows EXE
-
-            Download `audio2text-windows.exe` and run it directly — no installation required.
-
-            **First launch:** the app downloads the Whisper speech model (~250 MB for *small*, the new default) automatically.
-
-            ### What's new in v0.6.6
-            - **Word duplication fixed** — with continuous speech, the same phrase no longer appears twice across a chunk boundary
-            - **Natural text flow** — transcription output is now continuous prose instead of one hard line per chunk
-
-            ### What was new in v0.6.5
-            - **Missing words fixed** — words spoken at a chunk boundary are no longer silently dropped; overlap between chunks ensures the VAD filter sees every word in full context
-
-            ### What was new in v0.6.4
-            - **Configurable chunk / buffer size** — new Chunk dropdown (3 s / 5 s / 8 s / 15 s / 30 s) lets you tune latency vs. accuracy; hover for a tooltip explaining the tradeoff
-            - **Settings persist across restarts** — model, language, translate, input source, and chunk size are now saved automatically and restored on next launch
-            - **Cleaner error messages** — soundcard errors no longer leak raw Windows error codes
-
-            ### What was new in earlier releases
-            - **Models stored next to the EXE** — downloaded model files are saved in a `models/` folder next to `audio2text-windows.exe`, not buried in your user profile
-            - **Improved transcription quality** — default model upgraded from *tiny* to *small* (3–4× better accuracy); *large-v3* also available in the dropdown
-            - **Audio normalisation** — quiet loopback audio (e.g. VoIP calls) is now boosted before transcription
-            - **VAD filter** — silence and noise between speech segments no longer causes hallucinations
-            - **Longer audio chunks** — 8 s chunks (up from 5 s) give Whisper more context for accurate word boundaries
-            - **System audio (loopback) capture** — transcribe/translate incoming speech from WhatsApp, Teams, Zoom, and other VoIP calls in real time via WASAPI loopback (no extra installs)
-            - **Microphone live capture** — stream microphone input directly to Whisper
-            - **Translate to English** — one-click toggle translates any detected language to English using Whisper's built-in translate mode
-            - **Stop button** — end live capture at any time; remaining buffered audio is flushed automatically
-
-            ### System requirements
-            - Windows 10 / 11 (x64)
-            - Internet connection on first run
-
-            ### Supported audio formats (file mode)
-            MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS
+          tag_name: ${{ needs.create-release.outputs.version }}
           files: desktop/dist/audio2text-windows.exe
-          draft: false
-          prerelease: false
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r desktop/requirements.txt
+
+      - name: Build macOS app bundle
+        working-directory: desktop
+        run: pyinstaller audio2text.spec
+
+      - name: Package .app as zip
+        run: cd desktop/dist && zip -r audio2text-macos.zip Audio2Text.app
+
+      - name: Upload macOS zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.version }}
+          files: desktop/dist/audio2text-macos.zip
