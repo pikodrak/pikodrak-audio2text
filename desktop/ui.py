@@ -31,6 +31,69 @@ class _ToolTip:
             self._tip = None
 
 
+class _DiarizationDownloadDialog(tk.Toplevel):
+    """Modal progress dialog for the one-time pyannote.audio runtime download."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Setting up diarization")
+        self.resizable(False, False)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # no closing during install
+        self._parent = parent
+        self._build()
+        self.transient(parent)
+        self.wait_visibility()
+        self.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        sw, sh = self.winfo_width(), self.winfo_height()
+        self.geometry(f"+{px + (pw - sw)//2}+{py + (ph - sh)//2}")
+        diar.install_pyannote(done_callback=self._on_done)
+
+    def _build(self):
+        ttk.Label(self,
+                  text="Downloading and installing pyannote.audio + PyTorch…",
+                  padding=(14, 10, 14, 2)).pack()
+        ttk.Label(self,
+                  text="One-time download (~2 GB). Please wait — this may take several minutes.",
+                  foreground="#555555", font=("Segoe UI", 8),
+                  wraplength=380, padding=(14, 0, 14, 8)).pack()
+        self._bar = ttk.Progressbar(self, mode="indeterminate", length=400)
+        self._bar.pack(padx=14, pady=(0, 8))
+        self._bar.start(10)
+        self._status_lbl = ttk.Label(
+            self, text="Starting installation…", foreground="#444444",
+            padding=(14, 0, 14, 6))
+        self._status_lbl.pack()
+        self._btn_frame = ttk.Frame(self)
+        self._btn_frame.pack(pady=(0, 12))
+
+    def _on_done(self, success, error):
+        self.after(0, self._finish, success, error)
+
+    def _finish(self, success, error):
+        self._bar.stop()
+        if success:
+            self._status_lbl.config(text="Installation complete!", foreground="#006600")
+            self.protocol("WM_DELETE_WINDOW", self._close_success)
+            ttk.Button(self._btn_frame, text="OK", command=self._close_success,
+                       width=10).pack()
+        else:
+            self._status_lbl.config(text="Installation failed.", foreground="#cc0000")
+            detail = (error or "Unknown error")[:300]
+            ttk.Label(self._btn_frame, text=detail, foreground="#aa0000",
+                      wraplength=380, font=("Segoe UI", 8)).pack(pady=(0, 4))
+            self.protocol("WM_DELETE_WINDOW", self.destroy)
+            ttk.Button(self._btn_frame, text="Close", command=self.destroy,
+                       width=10).pack()
+
+    def _close_success(self):
+        if hasattr(self._parent, "_on_diarization_installed"):
+            self._parent._on_diarization_installed()
+        self.destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     """Modal dialog for advanced settings: beam size, output format, diarization config."""
 
@@ -93,24 +156,26 @@ class SettingsDialog(tk.Toplevel):
         df.pack(fill=tk.X, padx=10, pady=4)
 
         self.diarize_var = tk.BooleanVar()
-        _diar_chk = ttk.Checkbutton(df, text="Enable speaker diarization",
-                                    variable=self.diarize_var,
-                                    command=self._on_diarize_toggle)
-        _diar_chk.pack(anchor=tk.W)
+        self._diar_chk = ttk.Checkbutton(df, text="Enable speaker diarization",
+                                         variable=self.diarize_var,
+                                         command=self._on_diarize_toggle)
+        self._diar_chk.pack(anchor=tk.W)
         if not diar.DIARIZATION_AVAILABLE:
-            _diar_chk.config(state="disabled")
-            ttk.Label(df,
-                      text="Not available in the bundled EXE — run from source.",
-                      foreground="#aa4444",
-                      font=("Segoe UI", 8, "italic")).pack(anchor=tk.W)
+            self._diar_status_lbl = ttk.Label(
+                df,
+                text="First-time setup: click above to download PyTorch + pyannote (~2 GB).",
+                foreground="#886600",
+                font=("Segoe UI", 8, "italic"),
+                wraplength=380)
+            self._diar_status_lbl.pack(anchor=tk.W)
         else:
+            self._diar_status_lbl = None
             _ToolTip(df,
                      "Labels each segment with a speaker ID.\n\n"
                      "Requires:\n"
-                     "  • pip install pyannote.audio\n"
                      "  • A free HuggingFace token\n"
                      "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
-                     "First run downloads ~1–2 GB. Not available in the bundled EXE.")
+                     "First run downloads the model (~1–2 GB).")
 
         # HF Token row
         self._hf_row = ttk.Frame(df)
@@ -187,6 +252,11 @@ class SettingsDialog(tk.Toplevel):
         self._refresh_beam_hint()
 
     def _on_diarize_toggle(self):
+        if self.diarize_var.get() and not diar.DIARIZATION_AVAILABLE:
+            # User checked the box but pyannote isn't installed yet — start download
+            self.diarize_var.set(False)
+            _DiarizationDownloadDialog(self)
+            return
         state = "normal" if self.diarize_var.get() else "disabled"
         for child in self._hf_row.winfo_children():
             try:
@@ -199,6 +269,15 @@ class SettingsDialog(tk.Toplevel):
             except tk.TclError:
                 pass
         self._on_speaker_mode_change()
+
+    def _on_diarization_installed(self):
+        """Called after a successful pyannote.audio install via _DiarizationDownloadDialog."""
+        if self._diar_status_lbl is not None:
+            self._diar_status_lbl.config(
+                text="Diarization installed — enable it below.",
+                foreground="#006600")
+        self.diarize_var.set(True)
+        self._on_diarize_toggle()
 
     def _on_speaker_mode_change(self, _event=None):
         mode = self.speaker_mode_var.get()
@@ -241,6 +320,9 @@ class SettingsDialog(tk.Toplevel):
         p.custom_speaker_count_var.set(self.custom_count_var.get())
         p.speaker_a_name_var.set(self.speaker_a_var.get().strip() or "Person A")
         p.speaker_b_name_var.set(self.speaker_b_var.get().strip() or "Person B")
+        # If diarization was just installed this session, re-enable the main checkbox
+        if diar.DIARIZATION_AVAILABLE and hasattr(p, "_diar_cb"):
+            p._diar_cb.config(state="normal")
         # Sync diarization toggle visibility in main window
         p._on_diarize_toggle()
         self._saved = True
@@ -355,24 +437,24 @@ class Audio2TextApp(tk.Tk):
         diar_row.pack(fill=tk.X)
 
         self.diarize_var = tk.BooleanVar(value=False)
-        diar_cb = ttk.Checkbutton(
+        self._diar_cb = ttk.Checkbutton(
             diar_row, text="Speaker diarization",
             variable=self.diarize_var,
             command=self._on_diarize_toggle,
         )
-        diar_cb.pack(side=tk.LEFT)
+        self._diar_cb.pack(side=tk.LEFT)
         if not diar.DIARIZATION_AVAILABLE:
-            diar_cb.config(state="disabled")
-            _ToolTip(diar_cb,
-                     "Diarization not available in the bundled EXE — run from source.")
+            self._diar_cb.config(state="disabled")
+            _ToolTip(self._diar_cb,
+                     "Speaker diarization not yet installed.\n\n"
+                     "Open Settings → Diarization to download (~2 GB, one-time).")
         else:
-            _ToolTip(diar_cb,
+            _ToolTip(self._diar_cb,
                      "Label each segment with the speaker ID.\n\n"
                      "Requires:\n"
-                     "  • pip install pyannote.audio\n"
                      "  • A free HuggingFace token (Settings → Diarization)\n"
                      "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
-                     "First run downloads ~1–2 GB. Not available in the bundled EXE.")
+                     "First run downloads the model (~1–2 GB).")
 
         # Speaker mode selector — visible when diarization is enabled
         self._speaker_mode_frame = ttk.Frame(diar_row)
