@@ -10,6 +10,23 @@ from config import DIAR_MODEL_ID, frozen_base_dir
 
 
 # ---------------------------------------------------------------------------
+# Subprocess helpers
+# ---------------------------------------------------------------------------
+
+def _no_window_kwargs():
+    """Return kwargs that hide the console window on Windows. No-op on other platforms."""
+    if sys.platform != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": si,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Venv paths
 # ---------------------------------------------------------------------------
 
@@ -193,7 +210,10 @@ def _find_python():
         if "WindowsApps" in path:
             continue
         try:
-            r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+            r = subprocess.run(
+                [path, "--version"], capture_output=True, timeout=5,
+                **_no_window_kwargs()
+            )
             out = (r.stdout + r.stderr).decode(errors="ignore")
             if r.returncode == 0 and out.startswith("Python 3"):
                 return path
@@ -240,8 +260,11 @@ def setup_venv(progress_callback=None, done_callback=None):
                 return
 
             _report("Creating virtual environment…")
-            r = subprocess.run([python, "-m", "venv", venv],
-                               capture_output=True, text=True)
+            r = subprocess.run(
+                [python, "-m", "venv", venv],
+                capture_output=True, text=True,
+                **_no_window_kwargs()
+            )
             if r.returncode != 0:
                 if done_callback:
                     done_callback(False, f"venv creation failed:\n{r.stderr or r.stdout}")
@@ -253,14 +276,24 @@ def setup_venv(progress_callback=None, done_callback=None):
                 pip_exe = os.path.join(venv, "bin", "pip")
 
             _report("Downloading pyannote.audio + PyTorch (~2 GB) — this may take several minutes…")
-            r = subprocess.run(
-                [pip_exe, "install", "-q", "pyannote.audio"],
-                capture_output=True, text=True,
+            collected_lines = []
+            proc = subprocess.Popen(
+                [pip_exe, "install", "--no-color", "--progress-bar", "off", "pyannote.audio"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                **_no_window_kwargs(),
             )
-            if r.returncode != 0:
-                err = (r.stderr or r.stdout or "").strip()
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip()
+                if line:
+                    collected_lines.append(line)
+                    _report(line[:120])
+            proc.wait()
+            if proc.returncode != 0:
+                err = "\n".join(collected_lines[-20:]).strip()
                 if done_callback:
-                    done_callback(False, err or f"pip returned exit code {r.returncode}")
+                    done_callback(False, err or f"pip returned exit code {proc.returncode}")
                 return
 
             DIARIZATION_AVAILABLE = True
@@ -299,6 +332,7 @@ class DiarizeWorker:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_no_window_kwargs(),
         )
         self._hf_token = hf_token
 
@@ -409,7 +443,7 @@ def run_diarize(audio_path, hf_token, min_speakers=None, max_speakers=None):
         if min_speakers is not None:
             max_s = max_speakers if max_speakers is not None else min_speakers
             args += [str(min_speakers), str(max_s)]
-        result = subprocess.run(args, capture_output=True, text=True)
+        result = subprocess.run(args, capture_output=True, text=True, **_no_window_kwargs())
         if result.returncode != 0:
             raise RuntimeError(f"Diarization failed:\n{result.stderr or result.stdout}")
         return json.loads(result.stdout.strip())
