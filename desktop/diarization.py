@@ -173,14 +173,28 @@ def reset_cache():
     _pipeline_token = None
 
 
+def _find_python():
+    """Find a real Python interpreter on PATH (not the frozen EXE).
+
+    Inside a PyInstaller bundle sys.executable is the EXE itself and the
+    embedded pip cannot install packages.  We need an external interpreter.
+    """
+    import shutil
+    for candidate in ["python3", "python", "py"]:
+        path = shutil.which(candidate)
+        if path:
+            return path
+    return None
+
+
 def install_pyannote(done_callback=None):
     """Download and install pyannote.audio + PyTorch into <exe_dir>/diarize/ (EXE only).
 
     done_callback(success: bool, error: str | None) is invoked from a background
     thread — callers must marshal back to the UI thread before touching widgets.
     """
+    import subprocess
     import threading
-    import io
 
     diarize_dir = _exe_diarize_dir()
     if not diarize_dir:
@@ -190,30 +204,35 @@ def install_pyannote(done_callback=None):
 
     def _run():
         global DIARIZATION_AVAILABLE
-        cap = io.StringIO()
-        old_out, old_err = sys.stdout, sys.stderr
         try:
             os.makedirs(diarize_dir, exist_ok=True)
-            sys.stdout = sys.stderr = cap
-            from pip._internal.cli.main import main as pip_main
-            rc = pip_main([
-                "install",
-                "--target", diarize_dir,
-                "--no-user",
-                "--no-warn-script-location",
-                "-q",
-                "pyannote.audio",
-            ])
+            python = _find_python()
+            if not python:
+                if done_callback:
+                    done_callback(
+                        False,
+                        "Python 3 not found on PATH — install Python from python.org and retry.",
+                    )
+                return
+            result = subprocess.run(
+                [
+                    python, "-m", "pip", "install",
+                    "--target", diarize_dir,
+                    "--no-user",
+                    "--no-warn-script-location",
+                    "-q",
+                    "pyannote.audio",
+                ],
+                capture_output=True,
+                text=True,
+            )
         except Exception:
             import traceback
-            sys.stdout, sys.stderr = old_out, old_err
             if done_callback:
                 done_callback(False, traceback.format_exc())
             return
-        finally:
-            sys.stdout, sys.stderr = old_out, old_err
 
-        if rc == 0:
+        if result.returncode == 0:
             if diarize_dir not in sys.path:
                 sys.path.insert(0, diarize_dir)
             try:
@@ -225,8 +244,8 @@ def install_pyannote(done_callback=None):
                 if done_callback:
                     done_callback(False, f"Packages installed but import failed: {exc}")
         else:
-            pip_output = cap.getvalue().strip()
+            pip_output = (result.stderr or result.stdout or "").strip()
             if done_callback:
-                done_callback(False, pip_output or f"pip returned exit code {rc}")
+                done_callback(False, pip_output or f"pip returned exit code {result.returncode}")
 
     threading.Thread(target=_run, daemon=True).start()
