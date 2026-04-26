@@ -174,16 +174,30 @@ def reset_cache():
 
 
 def _find_python():
-    """Find a real Python interpreter on PATH (not the frozen EXE).
+    """Find a real Python 3 interpreter on PATH (not the frozen EXE).
 
     Inside a PyInstaller bundle sys.executable is the EXE itself and the
     embedded pip cannot install packages.  We need an external interpreter.
+
+    On Windows, shutil.which('python') often resolves to the Microsoft Store
+    stub in %LOCALAPPDATA%/Microsoft/WindowsApps — that stub prints an error
+    and exits non-zero.  We skip it and verify each candidate actually runs.
     """
     import shutil
+    import subprocess
     for candidate in ["python3", "python", "py"]:
         path = shutil.which(candidate)
-        if path:
-            return path
+        if not path:
+            continue
+        if "WindowsApps" in path:
+            continue
+        try:
+            r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+            out = (r.stdout + r.stderr).decode(errors="ignore")
+            if r.returncode == 0 and out.startswith("Python 3"):
+                return path
+        except Exception:
+            continue
     return None
 
 
@@ -211,7 +225,10 @@ def install_pyannote(done_callback=None):
                 if done_callback:
                     done_callback(
                         False,
-                        "Python 3 not found on PATH — install Python from python.org and retry.",
+                        "Python 3 not found. Download and install it from https://www.python.org/downloads/ "
+                        "(use the official installer, not the Microsoft Store version). "
+                        "During installation, check \"Add Python to PATH\". "
+                        "Then restart Audio2Text and try again.",
                     )
                 return
             result = subprocess.run(
