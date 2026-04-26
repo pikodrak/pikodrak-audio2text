@@ -93,16 +93,24 @@ class SettingsDialog(tk.Toplevel):
         df.pack(fill=tk.X, padx=10, pady=4)
 
         self.diarize_var = tk.BooleanVar()
-        ttk.Checkbutton(df, text="Enable speaker diarization",
-                        variable=self.diarize_var,
-                        command=self._on_diarize_toggle).pack(anchor=tk.W)
-        _ToolTip(df,
-                 "Labels each segment with a speaker ID.\n\n"
-                 "Requires:\n"
-                 "  • pip install pyannote.audio\n"
-                 "  • A free HuggingFace token\n"
-                 "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
-                 "First run downloads ~1–2 GB. Not available in the bundled EXE.")
+        _diar_chk = ttk.Checkbutton(df, text="Enable speaker diarization",
+                                    variable=self.diarize_var,
+                                    command=self._on_diarize_toggle)
+        _diar_chk.pack(anchor=tk.W)
+        if not diar.DIARIZATION_AVAILABLE:
+            _diar_chk.config(state="disabled")
+            ttk.Label(df,
+                      text="Not available in the bundled EXE — run from source.",
+                      foreground="#aa4444",
+                      font=("Segoe UI", 8, "italic")).pack(anchor=tk.W)
+        else:
+            _ToolTip(df,
+                     "Labels each segment with a speaker ID.\n\n"
+                     "Requires:\n"
+                     "  • pip install pyannote.audio\n"
+                     "  • A free HuggingFace token\n"
+                     "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
+                     "First run downloads ~1–2 GB. Not available in the bundled EXE.")
 
         # HF Token row
         self._hf_row = ttk.Frame(df)
@@ -161,7 +169,7 @@ class SettingsDialog(tk.Toplevel):
         self._refresh_beam_hint()
         self.translate_var.set(p.translate_var.get())
         self.format_var.set(p.output_format_var.get())
-        self.diarize_var.set(p.diarize_var.get())
+        self.diarize_var.set(p.diarize_var.get() and diar.DIARIZATION_AVAILABLE)
         self.hf_token_var.set(p.hf_token_var.get())
         self.speaker_mode_var.set(p.speaker_mode_var.get())
         self.custom_count_var.set(p.custom_speaker_count_var.get())
@@ -261,7 +269,13 @@ class Audio2TextApp(tk.Tk):
         # Per-session speaker label mapping for cross-chunk consistency
         self._speaker_label_map = {}
         self._build_ui()
-        self._apply_settings(config.load_settings())
+        _raw = config.load_settings()
+        _settings = config.sanitize_settings(_raw, diarization_available=diar.DIARIZATION_AVAILABLE)
+        self._apply_settings(_settings)
+        # Persist sanitized settings immediately so future runs start clean even
+        # if the app exits abnormally before _on_close can write them.
+        if _settings is not _raw and _raw.get("diarize"):
+            self._save_settings()
         self._on_source_change()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -347,13 +361,18 @@ class Audio2TextApp(tk.Tk):
             command=self._on_diarize_toggle,
         )
         diar_cb.pack(side=tk.LEFT)
-        _ToolTip(diar_cb,
-                 "Label each segment with the speaker ID.\n\n"
-                 "Requires:\n"
-                 "  • pip install pyannote.audio\n"
-                 "  • A free HuggingFace token (Settings → Diarization)\n"
-                 "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
-                 "First run downloads ~1–2 GB. Not available in the bundled EXE.")
+        if not diar.DIARIZATION_AVAILABLE:
+            diar_cb.config(state="disabled")
+            _ToolTip(diar_cb,
+                     "Diarization not available in the bundled EXE — run from source.")
+        else:
+            _ToolTip(diar_cb,
+                     "Label each segment with the speaker ID.\n\n"
+                     "Requires:\n"
+                     "  • pip install pyannote.audio\n"
+                     "  • A free HuggingFace token (Settings → Diarization)\n"
+                     "  • Accept license at huggingface.co/pyannote/speaker-diarization-3.1\n\n"
+                     "First run downloads ~1–2 GB. Not available in the bundled EXE.")
 
         # Speaker mode selector — visible when diarization is enabled
         self._speaker_mode_frame = ttk.Frame(diar_row)
@@ -422,7 +441,7 @@ class Audio2TextApp(tk.Tk):
         if isinstance(s.get("mic_device"), str):
             self.mic_var.set(s["mic_device"] or config.MIC_DEFAULT_LABEL)
         if isinstance(s.get("diarize"), bool):
-            self.diarize_var.set(s["diarize"])
+            self.diarize_var.set(s["diarize"] and diar.DIARIZATION_AVAILABLE)
         if s.get("beam_size") in config.BEAM_SIZES:
             self.beam_size_var.set(s["beam_size"])
         if s.get("output_format") in config.OUTPUT_FORMATS:

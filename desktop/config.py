@@ -55,6 +55,10 @@ def model_cache_dir():
 
 
 def config_path():
+    # Portable mode: EXE bundles store settings.json next to the executable so
+    # the whole folder (EXE + models/ + settings.json) is self-contained.
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "settings.json")
     if sys.platform == "win32":
         base = os.environ.get("APPDATA", os.path.expanduser("~"))
     else:
@@ -136,6 +140,21 @@ def load_settings():
     except Exception:
         pass
     return data
+
+
+def sanitize_settings(data, *, diarization_available=True):
+    """Return a copy of data with settings that require unavailable features forced off.
+
+    Pass diarization_available=False (EXE mode) to clear any stale diarize=True
+    entry before it reaches the UI or transcription code, preventing a pyannote
+    import error even when the user has old settings saved from a source-code run.
+    """
+    if diarization_available:
+        return data
+    out = dict(data)
+    out["diarize"] = False
+    out["speaker_mode"] = "Auto"
+    return out
 
 
 def save_settings(data):
