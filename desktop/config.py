@@ -70,6 +70,22 @@ def model_cache_dir():
     return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
 
 
+def whisper_device_and_compute_type():
+    """Pick a (device, compute_type) pair faster-whisper can actually load.
+
+    float16 fails on CPU with "Requested float16 compute type, but the target
+    device or backend do not support efficient float16 computation". Detect
+    CUDA via ctranslate2 (already a faster-whisper dependency, no torch needed).
+    """
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda", "float16"
+    except Exception:
+        pass
+    return "cpu", "int8"
+
+
 def config_path():
     # Portable mode: bundles store settings.json next to the executable (Windows)
     # or next to the .app bundle (macOS) so the distributable folder is self-contained.

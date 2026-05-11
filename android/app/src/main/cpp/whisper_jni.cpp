@@ -1,6 +1,7 @@
 #include <jni.h>
 #include "whisper.h"
 #include <string>
+#include <cstring>
 #include <android/log.h>
 
 #define TAG "whisper_jni"

@@ -583,11 +583,20 @@ class Audio2TextApp(tk.Tk):
     def _on_diarize_toggle(self):
         if self.diarize_var.get():
             self._speaker_mode_frame.pack(side=tk.LEFT)
-            # If diarize just got enabled and venv not ready, kick off download
             if not diar.DIARIZATION_AVAILABLE:
                 self.diarize_var.set(False)
                 self._speaker_mode_frame.pack_forget()
-                self._start_diar_download()
+                if getattr(sys, "frozen", False):
+                    # Bundled EXE: auto-install pyannote into a venv.
+                    self._start_diar_download()
+                else:
+                    messagebox.showinfo(
+                        "Install pyannote.audio",
+                        "Speaker diarization needs pyannote.audio.\n\n"
+                        "Install it in this Python environment:\n"
+                        "    pip install pyannote.audio\n\n"
+                        "Then restart Audio2Text.",
+                    )
         else:
             self._speaker_mode_frame.pack_forget()
         diar.reset_cache()
@@ -664,9 +673,11 @@ class Audio2TextApp(tk.Tk):
                 if speaker_mode == "Two persons" else None
             )
 
+            device, compute_type = config.whisper_device_and_compute_type()
             self.after(0, self.status_var.set,
-                       f"Loading '{model_name}' model — cache: {cache}")
-            model = WhisperModel(model_name, compute_type="float16", download_root=cache)
+                       f"Loading '{model_name}' ({device}/{compute_type}) — cache: {cache}")
+            model = WhisperModel(model_name, device=device, compute_type=compute_type,
+                                 download_root=cache)
             self.after(0, self.status_var.set, "Transcribing…")
             segments, info = model.transcribe(
                 path, language=lang, beam_size=beam_size, task=task, vad_filter=True)
@@ -745,10 +756,12 @@ class Audio2TextApp(tk.Tk):
                 "─────────────────────────────────────────\n"
                 f"Loading model… (first run downloads {hint}, please wait)\n"
             ))
+            device, compute_type = config.whisper_device_and_compute_type()
             self.after(0, self.status_var.set,
-                       f"Loading '{model_name}' model… (cache: {cache})")
+                       f"Loading '{model_name}' ({device}/{compute_type})… (cache: {cache})")
 
-            model = WhisperModel(model_name, compute_type="float16", download_root=cache)
+            model = WhisperModel(model_name, device=device, compute_type=compute_type,
+                                 download_root=cache)
 
             if do_diarize:
                 if getattr(sys, "frozen", False):
@@ -994,7 +1007,8 @@ class Audio2TextApp(tk.Tk):
                         seg.text.strip() for seg in segs_gen
                         if seg.start >= overlap_secs
                     )
-                except Exception:
+                except Exception as exc:
+                    sys.stderr.write(f"[preview] transcribe error: {exc}\n")
                     continue
 
             if text and self._recording and self._preview_gen == gen:

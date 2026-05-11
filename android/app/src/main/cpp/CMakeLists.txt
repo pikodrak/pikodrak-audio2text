@@ -1,8 +1,14 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(whisper_android)
 
-# whisper.cpp source tree is a git submodule at this path
+# whisper.cpp source tree is a git submodule at this path.
+# Run `git submodule update --init --recursive` before the first build.
 set(WHISPER_DIR ${CMAKE_SOURCE_DIR}/whisper.cpp)
+if(NOT EXISTS ${WHISPER_DIR}/CMakeLists.txt)
+    message(FATAL_ERROR
+        "whisper.cpp submodule is missing at ${WHISPER_DIR}.\n"
+        "Run: git submodule update --init --recursive")
+endif()
 
 # Disable everything we don't need
 set(BUILD_SHARED_LIBS OFF)
@@ -22,8 +28,10 @@ target_include_directories(whisper-jni PRIVATE
     ${WHISPER_DIR}/ggml/include
 )
 
+# ggml is split into its own target in current whisper.cpp; link both.
 target_link_libraries(whisper-jni
     whisper
+    ggml
     android
     log
 )

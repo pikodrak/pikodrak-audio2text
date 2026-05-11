@@ -194,8 +194,10 @@ def _find_python():
             continue
         try:
             r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
-            out = (r.stdout + r.stderr).decode(errors="ignore")
-            if r.returncode == 0 and out.startswith("Python 3"):
+            out = (r.stdout + r.stderr).decode(errors="ignore").strip()
+            # "py" launcher prints version on stderr; first line is what we want.
+            first_line = out.splitlines()[0] if out else ""
+            if r.returncode == 0 and first_line.startswith("Python 3"):
                 return path
         except Exception:
             continue
@@ -305,6 +307,8 @@ class DiarizeWorker:
     def run_chunk(self, wav_bytes, hf_token, min_speakers=None, max_speakers=None):
         """Send a WAV audio chunk, return list of {start, end, speaker} dicts."""
         import base64
+        if self._proc is None or self._proc.poll() is not None:
+            raise RuntimeError("Diarization worker is not running")
         req = {
             "hf_token": hf_token,
             "audio_b64": base64.b64encode(wav_bytes).decode(),
@@ -313,10 +317,28 @@ class DiarizeWorker:
         }
         line = (json.dumps(req) + "\n").encode()
         with self._lock:
-            self._proc.stdin.write(line)
-            self._proc.stdin.flush()
+            try:
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise RuntimeError(f"Diarization subprocess died: {exc}") from exc
             resp_line = self._proc.stdout.readline()
-        resp = json.loads(resp_line)
+        if not resp_line:
+            # Subprocess exited; surface stderr to help diagnose pyannote crashes.
+            stderr_tail = b""
+            try:
+                stderr_tail = self._proc.stderr.read() or b""
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Diarization subprocess exited unexpectedly: "
+                + stderr_tail.decode(errors="ignore").strip()[-500:]
+            )
+        try:
+            resp = json.loads(resp_line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Invalid response from diarization subprocess: {resp_line!r}") from exc
         if not resp.get("ok"):
             raise RuntimeError(resp.get("error", "Diarization subprocess error"))
         return resp["result"]
