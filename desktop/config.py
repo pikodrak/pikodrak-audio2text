@@ -42,6 +42,7 @@ DEFAULTS = {
     "custom_speaker_count": 2,
     "speaker_a_name": "Person A",
     "speaker_b_name": "Person B",
+    "use_vad": True,
 }
 
 
@@ -169,6 +170,8 @@ def load_settings():
             val = stored.get(key)
             if isinstance(val, str) and val.strip():
                 data[key] = val.strip()
+        if isinstance(stored.get("use_vad"), bool):
+            data["use_vad"] = stored["use_vad"]
     except Exception:
         pass
     return data

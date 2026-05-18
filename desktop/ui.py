@@ -76,6 +76,10 @@ class SettingsDialog(tk.Toplevel):
         self.translate_var = tk.BooleanVar()
         ttk.Checkbutton(row2, text="Translate output to English",
                         variable=self.translate_var).pack(side=tk.LEFT)
+        
+        self.use_vad_var = tk.BooleanVar()
+        ttk.Checkbutton(row2, text="Enable VAD (reduces noise, may drop quiet words)",
+                        variable=self.use_vad_var).pack(side=tk.LEFT, padx=(15, 0))
 
         # ── Output format ──────────────────────────────────────────────────────
         of = ttk.LabelFrame(self, text="Output Format", padding=8)
@@ -178,6 +182,7 @@ class SettingsDialog(tk.Toplevel):
         self.custom_count_var.set(p.custom_speaker_count_var.get())
         self.speaker_a_var.set(p.speaker_a_name_var.get())
         self.speaker_b_var.set(p.speaker_b_name_var.get())
+        self.use_vad_var.set(p.use_vad_var.get())
         self._on_diarize_toggle()
         self._on_speaker_mode_change()
 
@@ -253,6 +258,7 @@ class SettingsDialog(tk.Toplevel):
         p.custom_speaker_count_var.set(self.custom_count_var.get())
         p.speaker_a_name_var.set(self.speaker_a_var.get().strip() or "Person A")
         p.speaker_b_name_var.set(self.speaker_b_var.get().strip() or "Person B")
+        p.use_vad_var.set(self.use_vad_var.get())
         if diar.DIARIZATION_AVAILABLE and hasattr(p, "_diar_cb"):
             p._diar_cb.config(state="normal")
         p._on_diarize_toggle()
@@ -408,6 +414,7 @@ class Audio2TextApp(tk.Tk):
         self.custom_speaker_count_var = tk.IntVar(value=2)
         self.speaker_a_name_var = tk.StringVar(value="Person A")
         self.speaker_b_name_var = tk.StringVar(value="Person B")
+        self.use_vad_var = tk.BooleanVar(value=True)
 
         # Action buttons
         btn_frame = ttk.Frame(self, padding=(10, 0, 10, 5))
@@ -521,6 +528,8 @@ class Audio2TextApp(tk.Tk):
             self.speaker_a_name_var.set(s["speaker_a_name"])
         if isinstance(s.get("speaker_b_name"), str):
             self.speaker_b_name_var.set(s["speaker_b_name"])
+        if isinstance(s.get("use_vad"), bool):
+            self.use_vad_var.set(s["use_vad"])
         self.hf_token_var.set(config.load_hf_token())
         self._on_model_change()
 
@@ -540,6 +549,7 @@ class Audio2TextApp(tk.Tk):
             "custom_speaker_count": self.custom_speaker_count_var.get(),
             "speaker_a_name": self.speaker_a_name_var.get(),
             "speaker_b_name": self.speaker_b_name_var.get(),
+            "use_vad": self.use_vad_var.get(),
         }
 
     def _save_settings(self):
@@ -680,7 +690,7 @@ class Audio2TextApp(tk.Tk):
                                  download_root=cache)
             self.after(0, self.status_var.set, "Transcribing…")
             segments, info = model.transcribe(
-                path, language=lang, beam_size=beam_size, task=task, vad_filter=True)
+                path, language=lang, beam_size=beam_size, task=task, vad_filter=self.use_vad_var.get())
             segments = list(segments)
 
             if do_diarize:
@@ -1001,11 +1011,11 @@ class Audio2TextApp(tk.Tk):
                 try:
                     segs_gen, _ = model.transcribe(
                         audio, language=lang, beam_size=1, task=task,
-                        vad_filter=True, vad_parameters=config.LIVE_VAD_PARAMS,
+                        vad_filter=self.use_vad_var.get(), vad_parameters=config.LIVE_VAD_PARAMS,
                     )
                     text = " ".join(
                         seg.text.strip() for seg in segs_gen
-                        if seg.start >= overlap_secs
+                        if seg.end > overlap_secs
                     )
                 except Exception as exc:
                     sys.stderr.write(f"[preview] transcribe error: {exc}\n")
@@ -1021,8 +1031,25 @@ class Audio2TextApp(tk.Tk):
             with self._whisper_lock:
                 segs_gen, info = model.transcribe(
                     audio, language=lang, beam_size=beam_size, task=task,
-                    vad_filter=True, vad_parameters=config.LIVE_VAD_PARAMS)
-                valid_segs = [seg for seg in segs_gen if seg.start >= overlap_secs]
+                    vad_filter=self.use_vad_var.get(), vad_parameters=config.LIVE_VAD_PARAMS,
+                    word_timestamps=True)
+                
+                valid_segs = []
+                for seg in segs_gen:
+                    if overlap_secs > 0 and getattr(seg, "words", None):
+                        valid_words = [w for w in seg.words if w.start >= overlap_secs]
+                        if valid_words:
+                            text = "".join(w.word for w in valid_words).strip()
+                            class _Seg:
+                                def __init__(self, start, end, text):
+                                    self.start = start
+                                    self.end = end
+                                    self.text = text
+                            if text:
+                                valid_segs.append(_Seg(valid_words[0].start, valid_words[-1].end, text))
+                    else:
+                        if seg.start >= overlap_secs or overlap_secs == 0:
+                            valid_segs.append(seg)
             detected_lang = info.language
 
             if do_diarize and valid_segs:
