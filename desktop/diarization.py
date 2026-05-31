@@ -9,6 +9,16 @@ import subprocess
 from config import DIAR_MODEL_ID, frozen_base_dir
 
 
+# Keep the GUI clean: a windowed (no-console) EXE otherwise flashes a black
+# console window for every child process (python probe, venv, pip, the diarize
+# worker). CREATE_NO_WINDOW suppresses those; it only exists on Windows.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _no_window_kwargs():
+    return {"creationflags": _CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+
+
 # ---------------------------------------------------------------------------
 # Venv paths
 # ---------------------------------------------------------------------------
@@ -38,18 +48,30 @@ def _diarize_runner_path():
 
 
 def _ensure_runner():
-    """Ensure the runner script exists beside the EXE (extract from bundle if needed)."""
+    """Return the runner path, extracted to a CLEAN directory next to the EXE.
+
+    Two traps to avoid, both fixed here:
+      • The runner must never be executed from inside _internal/: Python puts the
+        script's own directory first on sys.path, so the venv's Python would then
+        import the EXE's bundled packages (huggingface_hub, numpy, …) instead of
+        the venv's pinned ones — which broke diarization with errors like
+        "backports.zstd has no attribute 'ZstdFile'".
+      • A stale older copy must not linger, so we overwrite it every launch.
+    frozen_base_dir() (the folder holding the EXE) has no Python packages, so the
+    venv's site-packages win there.
+    """
     dst = _diarize_runner_path()
-    if os.path.isfile(dst):
-        return dst
-    # PyInstaller bundles the script as a data file; copy it out of _MEIPASS.
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         src = os.path.join(meipass, "audio2text_diarize.py")
         if os.path.isfile(src):
             import shutil
-            shutil.copy(src, dst)
-            return dst
+            try:
+                shutil.copy(src, dst)  # refresh to match this build
+            except Exception:
+                pass
+    if os.path.isfile(dst):
+        return dst
     raise FileNotFoundError(f"Diarization runner not found: {dst}")
 
 
@@ -81,16 +103,20 @@ DIARIZATION_AVAILABLE = venv_ready()
 
 
 # ---------------------------------------------------------------------------
-# Speaker helpers
+# Speaker helpers (file mode)
 # ---------------------------------------------------------------------------
 
-def speaker_constraints(speaker_mode, custom_count=2):
-    """Return (min_speakers, max_speakers) tuple for pyannote, or (None, None)."""
-    if speaker_mode == "Two persons":
-        return 2, 2
-    if speaker_mode == "Custom":
-        return max(2, custom_count), max(2, custom_count)
-    return None, None
+def _speaker_kwargs(min_speakers, max_speakers):
+    """A fixed count is pyannote's strongest constraint — prefer num_speakers
+    when min==max (best accuracy for a known speaker count), else a range."""
+    if min_speakers is not None and min_speakers == max_speakers:
+        return {"num_speakers": min_speakers}
+    kw = {}
+    if min_speakers is not None:
+        kw["min_speakers"] = min_speakers
+    if max_speakers is not None:
+        kw["max_speakers"] = max_speakers
+    return kw
 
 
 def normalize_speaker(label, speaker_mode="Auto", two_person_names=None, label_map=None):
@@ -193,7 +219,8 @@ def _find_python():
         if "WindowsApps" in path:
             continue
         try:
-            r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+            r = subprocess.run([path, "--version"], capture_output=True, timeout=5,
+                               **_no_window_kwargs())
             out = (r.stdout + r.stderr).decode(errors="ignore").strip()
             # "py" launcher prints version on stderr; first line is what we want.
             first_line = out.splitlines()[0] if out else ""
@@ -243,7 +270,7 @@ def setup_venv(progress_callback=None, done_callback=None):
 
             _report("Creating virtual environment…")
             r = subprocess.run([python, "-m", "venv", venv],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, **_no_window_kwargs())
             if r.returncode != 0:
                 if done_callback:
                     done_callback(False, f"venv creation failed:\n{r.stderr or r.stdout}")
@@ -254,10 +281,53 @@ def setup_venv(progress_callback=None, done_callback=None):
             else:
                 pip_exe = os.path.join(venv, "bin", "pip")
 
-            _report("Downloading pyannote.audio + PyTorch (~2 GB) — this may take several minutes…")
+            # Pin a known-good, mutually-compatible stack. The bleeding edge
+            # (pyannote.audio 4.x + huggingface_hub 1.x + torch 2.12 + torchcodec
+            # + numpy 2.x) is broken on Windows: hub 1.x raises
+            # "backports.zstd has no attribute 'ZstdFile'" and mishandles gated
+            # auth, and torchcodec needs absent FFmpeg DLLs. pyannote 3.1.1 with
+            # torch 2.2.2 and numpy<2 is the tested combo for diarization-3.1.
+            torch_ver = "2.2.2"
+
+            # CUDA build of torch for NVIDIA GPUs, else CPU build.
+            want_cuda = False
+            try:
+                import ctranslate2
+                want_cuda = ctranslate2.get_cuda_device_count() > 0
+            except Exception:
+                pass
+
+            torch_pkgs = [f"torch=={torch_ver}", f"torchaudio=={torch_ver}"]
+            if want_cuda:
+                _report("Downloading CUDA PyTorch (~2.5 GB) — this may take several minutes…")
+                r = subprocess.run(
+                    [pip_exe, "install", "-q", *torch_pkgs,
+                     "--index-url", "https://download.pytorch.org/whl/cu121"],
+                    capture_output=True, text=True, **_no_window_kwargs(),
+                )
+                if r.returncode != 0:
+                    want_cuda = False  # fall back to the CPU build below
+
+            if not want_cuda:
+                _report("Downloading PyTorch (CPU) — this may take a few minutes…")
+                r = subprocess.run(
+                    [pip_exe, "install", "-q", *torch_pkgs],
+                    capture_output=True, text=True, **_no_window_kwargs(),
+                )
+                if r.returncode != 0:
+                    err = (r.stderr or r.stdout or "").strip()
+                    if done_callback:
+                        done_callback(False, err or f"pip (torch) exit code {r.returncode}")
+                    return
+
+            _report("Downloading pyannote.audio…")
+            # Pin huggingface_hub too: 1.x has the "backports.zstd"/httpx breakage,
+            # and pyannote 3.1.1 still calls hf_hub_download(use_auth_token=...),
+            # which 0.23.4 honors. (Token is also passed via HF_TOKEN env at runtime.)
             r = subprocess.run(
-                [pip_exe, "install", "-q", "pyannote.audio"],
-                capture_output=True, text=True,
+                [pip_exe, "install", "-q", "numpy<2",
+                 "huggingface_hub==0.23.4", "pyannote.audio==3.1.1"],
+                capture_output=True, text=True, **_no_window_kwargs(),
             )
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "").strip()
@@ -301,6 +371,7 @@ class DiarizeWorker:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_no_window_kwargs(),
         )
         self._hf_token = hf_token
 
@@ -403,7 +474,19 @@ def _ensure_source_pipeline(hf_token):
             "3. Generate a token at huggingface.co/settings/tokens\n"
             "4. Enter the token in Settings → Diarization"
         )
-    _pipeline_cache = PyannotePipeline.from_pretrained(DIAR_MODEL_ID, use_auth_token=hf_token)
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+    try:
+        _pipeline_cache = PyannotePipeline.from_pretrained(DIAR_MODEL_ID, token=hf_token)
+    except TypeError:
+        _pipeline_cache = PyannotePipeline.from_pretrained(DIAR_MODEL_ID, use_auth_token=hf_token)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            _pipeline_cache.to(torch.device("cuda"))
+    except Exception:
+        pass
     _pipeline_token = hf_token
     return _pipeline_cache
 
@@ -431,18 +514,17 @@ def run_diarize(audio_path, hf_token, min_speakers=None, max_speakers=None):
         if min_speakers is not None:
             max_s = max_speakers if max_speakers is not None else min_speakers
             args += [str(min_speakers), str(max_s)]
-        result = subprocess.run(args, capture_output=True, text=True)
+        try:
+            result = subprocess.run(args, capture_output=True, text=True,
+                                    timeout=900, **_no_window_kwargs())
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Diarization timed out (over 15 minutes).")
         if result.returncode != 0:
             raise RuntimeError(f"Diarization failed:\n{result.stderr or result.stdout}")
         return json.loads(result.stdout.strip())
     else:
         pipeline = _ensure_source_pipeline(hf_token)
-        kwargs = {}
-        if min_speakers is not None:
-            kwargs["min_speakers"] = min_speakers
-        if max_speakers is not None:
-            kwargs["max_speakers"] = max_speakers
-        diarization = pipeline(audio_path, **kwargs)
+        diarization = pipeline(audio_path, **_speaker_kwargs(min_speakers, max_speakers))
         return [
             {"start": float(t.start), "end": float(t.end), "speaker": spk}
             for t, _, spk in diarization.itertracks(yield_label=True)
@@ -474,15 +556,16 @@ def run_diarize_audio(audio, sample_rate, hf_token,
                 pass
     else:
         import torch
+        import numpy as np
         pipeline = _ensure_source_pipeline(hf_token)
-        audio_tensor = torch.from_numpy(audio[None, :])
-        kwargs = {}
-        if min_speakers is not None:
-            kwargs["min_speakers"] = min_speakers
-        if max_speakers is not None:
-            kwargs["max_speakers"] = max_speakers
+        # Light peak normalization → levels near the embedding model's training
+        # distribution (mild accuracy gain on quiet/loud recordings).
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        norm = audio / peak * 0.95 if peak > 1e-4 else audio
+        audio_tensor = torch.from_numpy(norm[None, :])
         diarization = pipeline(
-            {"waveform": audio_tensor, "sample_rate": sample_rate}, **kwargs)
+            {"waveform": audio_tensor, "sample_rate": sample_rate},
+            **_speaker_kwargs(min_speakers, max_speakers))
         return [
             {"start": float(t.start), "end": float(t.end), "speaker": spk}
             for t, _, spk in diarization.itertracks(yield_label=True)

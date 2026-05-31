@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller build artifacts
+desktop/build/
+desktop/dist/
+
+# Diarization runtime venv (downloaded at runtime next to the EXE)
+diarize-env/
+desktop/diarize-env/
+
+# Local runtime data
+settings.json
+*.gemini_key

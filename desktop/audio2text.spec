@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ('faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub',
-            'soundcard', 'numpy', 'keyring', 'pip'):
+            'av', 'soundcard', 'numpy', 'keyring', 'websocket', 'pip'):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -27,6 +27,9 @@ a = Analysis(
         # Application modules
         'config',
         'diarization',
+        'streaming',
+        'cloud',
+        'deepgram',
         'ui',
         # keyring platform backends
         'keyring.backends',
@@ -49,16 +52,31 @@ _is_mac = _sys.platform == 'darwin'
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
-    name='audio2text-macos' if _is_mac else 'audio2text-windows',
+    exclude_binaries=True,
+    name='audio2text-windows' if not _is_mac else 'audio2text-macos',
     debug=False,
+    bootloader_ignore_signals=False,
     strip=_is_mac,
     upx=not _is_mac,
     console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
     icon=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=_is_mac,
+    upx=not _is_mac,
+    upx_exclude=[],
+    name='audio2text',
 )
 
 if _is_mac:
