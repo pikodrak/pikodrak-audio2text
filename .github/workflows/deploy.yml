@@ -94,11 +94,16 @@ jobs:
         working-directory: desktop
         run: pyinstaller audio2text.spec
 
-      - name: Upload Windows EXE to release
+      - name: Package onedir folder as zip
+        working-directory: desktop/dist
+        shell: pwsh
+        run: Compress-Archive -Path audio2text -DestinationPath audio2text-windows.zip
+
+      - name: Upload Windows zip to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.create-release.outputs.version }}
-          files: desktop/dist/audio2text-windows.exe
+          files: desktop/dist/audio2text-windows.zip
 
   build-macos:
     needs: create-release

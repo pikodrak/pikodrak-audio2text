@@ -81,7 +81,7 @@ coll = COLLECT(
 
 if _is_mac:
     app = BUNDLE(
-        exe,
+        coll,
         name='Audio2Text.app',
         bundle_identifier='com.vytvareniher.audio2text',
         info_plist={
